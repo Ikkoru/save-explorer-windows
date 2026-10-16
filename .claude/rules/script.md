@@ -220,7 +220,8 @@ Then:
 2. **A parse** of the script and the module (`[Management.Automation.Language.Parser]::ParseFile`, errors empty). The tests parse a written restore file.
 3. **A live run by hand**, twice, with `-ManualFolder` in the scratchpad: once with an empty label, once with `debug`, since the two report levels are rendered by different filters over the same lines. Answer the prompts by redirecting stdin (`"label`n`n" | powershell -File ...`). The apartment state should print `STA`, the window count should match reality, and the process should exit rather than hang after the final prompt.
 4. **A live `-Auto -NoWindow` run** with `-BackupFolder` and `-SettingsPath` in the scratchpad: `log.txt` gets one line, and the save folder holds a `.kopiaignore`. A change to the default folders or the move from old ones is run from a copy of the script and module in the scratchpad, with no folder parameters, laid out as the old version left it.
-5. **Restoring** reopens windows on the maintainer's screen and needs their go-ahead.
+5. **Restoring** reopens windows on the maintainer's screen and needs their go-ahead. The tests take `Select-MissingFolders` out of a written restore file and run it, which covers what a restore would open.
+6. **A change to the task's definition**: the tests check `New-AutoBackupTask`; compare it with the registered task field by field (`Get-ScheduledTask`, read-only), and run `Set up automatic backups.ps1` only answering Q, which reads the task and changes nothing.
 
 Report counts only (trap 16).
 

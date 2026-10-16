@@ -226,6 +226,20 @@ try {
     Check 'legacy folders: used where they are until moved' ((Resolve-SaveFolder (Join-Path $lr2 'Saved sessions\Automatic backups') (Join-Path $lr2 'Automatic backups')) -eq (Join-Path $lr2 'Automatic backups') -and
         (Resolve-SaveFolder (Join-Path $lr 'Saved sessions\Automatic backups') (Join-Path $lr 'Automatic backups')) -eq (Join-Path $lr 'Saved sessions\Automatic backups'))
 
+    # --- The scheduled task (defined, never registered here) -----------------
+
+    $taskScript = 'C:\Some folder, etc\Save Explorer Windows.ps1'
+    $def = New-AutoBackupTask -ScriptPath $taskScript
+    $act = @($def.Actions)[0]
+    Check 'task: runs the script hidden, with -Auto, its path quoted' ($act.Execute -eq 'conhost.exe' -and
+        $act.Arguments -eq ('--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -Auto' -f $taskScript))
+    Check 'task: the path reads back from the action' ((Get-TaskScriptPath $def) -eq $taskScript)
+    $trg = @($def.Triggers)[0]
+    Check 'task: every 2 hours, all day' ($trg.Repetition.Interval -eq 'PT2H' -and $trg.Repetition.Duration -eq 'P1D')
+    Check 'task: only while signed in, without administrator rights' ([string]$def.Principal.LogonType -eq 'Interactive' -and [string]$def.Principal.RunLevel -eq 'Limited')
+    Check 'task: catches up, never runs twice at once, stopped after 15 minutes' ($def.Settings.StartWhenAvailable -and
+        [string]$def.Settings.MultipleInstances -eq 'IgnoreNew' -and $def.Settings.ExecutionTimeLimit -eq 'PT15M')
+
     # --- state.json ---------------------------------------------------------
 
     $sf = Join-Path $tmp 'state'
@@ -274,6 +288,21 @@ try {
         $restoreText.StartsWith('# Windows Explorer session restore script') -and
         $restoreText.Contains('function Open-ExplorerGroup') -and
         $restoreText.TrimEnd().EndsWith('Read-Host "`nPress Enter to exit"') -and -not $restoreText.Contains('@@@'))
+    # The filter that skips folders already open, as the restore file holds it.
+    $restoreAst = [Management.Automation.Language.Parser]::ParseFile($rf, [ref]$null, [ref]$null)
+    $filter = $restoreAst.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Select-MissingFolders' }, $true)
+    Check 'restore file: carries the filter for folders already open' ($null -ne $filter)
+    if ($filter) {
+        . ([scriptblock]::Create($filter.Extent.Text))
+        $plan = Select-MissingFolders -Groups (G 'C:\A', 'C:\B' 'C:\C' 'C:\A') -OpenPaths @('c:\a', 'C:\C', 'C:\Elsewhere')
+        Check 'restore: open folders skipped, each once, any letter case' ($plan.Skipped -eq 2 -and $plan.Groups.Count -eq 2 -and
+            (Join-Paths $plan.Groups[0]) -eq 'C:\B' -and (Join-Paths $plan.Groups[1]) -eq 'C:\A')
+        Check 'restore: everything open opens nothing' ((Select-MissingFolders -Groups (G 'C:\A' 'C:\B') -OpenPaths @('C:\B', 'C:\A')).Groups.Count -eq 0)
+        $one = Select-MissingFolders -Groups (G 'C:\X') -OpenPaths @()
+        Check 'restore: nothing open opens everything, one tab staying a window' ($one.Skipped -eq 0 -and $one.Groups.Count -eq 1 -and
+            $one.Groups[0].Count -eq 1 -and $one.Groups[0][0] -eq 'C:\X')
+    }
+
     $b = Read-SessionBackup -Path $rf
     $same = $b.Groups.Count -eq 3
     for ($i = 0; $same -and $i -lt 3; $i++) { $same = (Join-Paths $b.Groups[$i]) -ceq (Join-Paths $groups[$i]) }

@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '6.3'
+$script:ProgramVersion = '6.4'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 
@@ -740,14 +740,47 @@ function Open-ExplorerGroup {
     }
 }
 
+function Select-MissingFolders {
+    # The windows to open: each saved window without the folders already
+    # open. Counted as a multiset, ignoring letter case: a folder open once is
+    # skipped once, so one saved in two tabs still opens its second. The tests
+    # run this function as written here, taken from a restore file.
+    param([object[]]$Groups, [string[]]$OpenPaths)
+    $open = [System.Collections.Generic.Dictionary[string, int]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in @($OpenPaths)) {
+        if ($p) { $n = 0; [void]$open.TryGetValue($p, [ref]$n); $open[$p] = $n + 1 }
+    }
+    $skipped = 0
+    $left = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($group in @($Groups)) {
+        $keep = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($p in @($group)) {
+            $n = 0
+            if ($open.TryGetValue($p, [ref]$n) -and $n -gt 0) { $open[$p] = $n - 1; $skipped++ } else { $keep.Add($p) }
+        }
+        if ($keep.Count -gt 0) { $left.Add([string[]]$keep.ToArray()) }
+    }
+    [pscustomobject]@{ Groups = $left.ToArray(); Skipped = $skipped }
+}
+
 if ($groups.Count -eq 0) {
     Write-Warning "No path groups found in this restore script."
 } else {
-    foreach ($group in $groups) {
-        Open-ExplorerGroup -Paths $group
-        Start-Sleep -Milliseconds 200
+    # Folders already open are skipped, so running this again after some
+    # were lost reopens only the missing ones. A frozen Explorer window holds
+    # this up until it is closed.
+    $openPaths = @(foreach ($w in @($shellCom.Windows())) { try { [string]$w.Document.Folder.Self.Path } catch { } })
+    $plan = Select-MissingFolders -Groups $groups -OpenPaths $openPaths
+    if ($plan.Skipped -gt 0) { Write-Host ("{0} folder(s) already open, so not opened again." -f $plan.Skipped) }
+    if ($plan.Groups.Count -eq 0) {
+        Write-Host "`nEvery folder in this file is already open." -ForegroundColor Green
+    } else {
+        foreach ($group in $plan.Groups) {
+            Open-ExplorerGroup -Paths $group
+            Start-Sleep -Milliseconds 200
+        }
+        Write-Host ("`nDone. {0} window(s) restored." -f $plan.Groups.Count) -ForegroundColor Green
     }
-    Write-Host ("`nDone. {0} window(s) restored." -f $groups.Count) -ForegroundColor Green
 }
 
 } catch {
@@ -1538,6 +1571,46 @@ function Initialize-SaveFolder {
     if (-not [IO.File]::Exists($marker)) {
         [IO.File]::WriteAllText($marker, $script:KopiaIgnoreText + "`n", $script:Utf8NoBom)
     }
+}
+
+# ---------------------------------------------------------------------------
+# The scheduled task
+#
+# One definition, used by "Set up automatic backups.ps1" and checked by the
+# tests. The task runs the script, so the script's file name is fixed: a
+# rename stops the backups until the setup is run again.
+# ---------------------------------------------------------------------------
+
+$script:TaskName = 'Save Explorer Windows every 2 hours'
+
+function Get-AutoBackupTaskName { $script:TaskName }
+
+function New-AutoBackupTask {
+    # The task's definition, not registered. conhost --headless keeps a
+    # console window from flashing up every two hours. The arguments are one
+    # string, the path quoted, since paths here hold spaces and commas.
+    # Interactive + Limited: runs only while the user is signed in, without
+    # administrator rights - an elevated process sees no Explorer windows.
+    param([string]$ScriptPath)
+    $folder = Split-Path -Parent $ScriptPath
+    $action = New-ScheduledTaskAction -Execute 'conhost.exe' -WorkingDirectory $folder `
+        -Argument ('--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -Auto' -f $ScriptPath)
+    # Daily from ten to one, repeating every two hours for the day.
+    $trigger = New-ScheduledTaskTrigger -Daily -At '00:50'
+    $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At '00:50' -RepetitionInterval (New-TimeSpan -Hours 2) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+    $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
+        -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+        -Description ('Saves the open Explorer windows every 2 hours into "Saved sessions\Automatic backups" beside {0}, removes old backups and warns about lost folders.' -f (Split-Path -Leaf $ScriptPath))
+}
+
+function Get-TaskScriptPath {
+    # The script an existing task runs, from its action's arguments.
+    param($Task)
+    $arguments = [string](@($Task.Actions)[0].Arguments)
+    $m = [regex]::Match($arguments, '-File "([^"]+)"')
+    if ($m.Success) { $m.Groups[1].Value } else { '' }
 }
 
 Export-ModuleMember -Function *

@@ -10,8 +10,10 @@ How the program is put together and what it does at runtime. `CLAUDE.md` holds t
 |---|---|
 | `Save Explorer Windows.ps1` | The entry point: a save by hand, `-Auto` for the scheduled run, `-ShowIncident` for the lost-folder window. Its name stays fixed, since the scheduled task names it |
 | `Explorer Windows Shared.psm1` | Everything else: the scan, the restore-file format, `Settings.ini`, `state.json`, and the cleanup and loss rules. Must sit beside the script. Holds the program's version, `$ProgramVersion`, which a run by hand prints and every save records |
+| `Set up automatic backups.ps1` | Installs, updates or removes the scheduled task, from `New-AutoBackupTask` in the module. Run by a person; asks before changing anything, and refuses to run elevated |
 | `Settings.ini` | The automatic backups' settings, each explained in the file. Rewritten with the defaults when missing; an unreadable value counts as its default and is logged |
-| `Tests\Run tests.ps1` | The module's checks. Needs no open Explorer window |
+| `Tests\Run tests.ps1` | The module's checks. Needs no open Explorer window, and never registers a task |
+| `README.md` | For people using it: how to save, set up the task and restore, and what to expect, in plain words |
 
 Every save goes under one folder beside the script, `Saved sessions\`:
 
@@ -43,7 +45,7 @@ Running a restore script reopens its session with the original window/tab groupi
 
 ### The scheduled task
 
-As set up on a PC that runs the automatic backups:
+`Set up automatic backups.ps1` registers it from `New-AutoBackupTask`, the one definition the tests check:
 
 - Name: `Save Explorer Windows every 2 hours`.
 - Trigger: daily at 00:50, repeating every 2 hours, so at ten to every odd hour. Runs only while the user is logged on, not elevated; a missed run starts as soon as possible; a run still going is not started twice; stopped after 15 minutes.
@@ -76,7 +78,11 @@ Explorer Windows Shared.psm1
 ├─ state.json: Read-BackupState, Write-BackupState; Write-BackupLog; named mutexes
 ├─ Get-ExplorerRestartInfo, Get-LostFolderVerdict, Get-CleanupPlan
 ├─ Update-AutomaticBackups, Remove-BackupIncident
-└─ Get-DefaultPaths, Initialize-SaveFolder
+├─ Get-DefaultPaths, Move-LegacySaveFolders, Resolve-SaveFolder, Initialize-SaveFolder
+└─ The task: Get-AutoBackupTaskName, New-AutoBackupTask, Get-TaskScriptPath
+
+Set up automatic backups.ps1
+└─ refuse if elevated → task present? update / remove / quit : install / quit → offer one run now
 ```
 
 ---
@@ -169,7 +175,11 @@ Every restore script and `state.json` lists open folders.
 
 ## The generated restore script
 
-Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, a P/Invoke block for `SetForegroundWindow`/`ShowWindow`, and `Open-ExplorerGroup`. Per window group:
+Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, a P/Invoke block for `SetForegroundWindow`/`ShowWindow`, `Open-ExplorerGroup` and `Select-MissingFolders`.
+
+First it reads the paths open now and drops them from the saved windows (`Select-MissingFolders`): as a multiset, ignoring letter case, so a folder open once is skipped once. A window left with no folders is not opened. A restore run again after a partial loss therefore reopens only what is missing; a missing folder whose tab-mates are still open opens in a window of its own, not beside them (the compare window, *Next*, is to fix that). Restore scripts written before 6.4 lack this and open everything. Reading the open paths goes through COM on the main thread, so a frozen Explorer window holds the restore up until it is closed.
+
+Then, per window group left:
 
 1. `Shell.Application.Open(firstPath)`: no argument parsing, so spaces and special characters are safe
 2. Poll for the new HWND

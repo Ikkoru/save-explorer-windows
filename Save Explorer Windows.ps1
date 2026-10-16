@@ -520,7 +520,7 @@ function Show-IncidentWindow {
         [void]$text.AppendLine('Did you close these folders yourself?')
         [void]$text.AppendLine()
         [void]$text.AppendLine('Yes: release that backup (cleanup may remove it later).')
-        [void]$text.AppendLine('No: keep it and show it in Explorer. To reopen all its folders, right-click it and choose "Run with PowerShell" (any that are still open will open twice).')
+        [void]$text.AppendLine('No: keep it and show it in Explorer. To reopen its missing folders, right-click it and choose "Run with PowerShell" (folders already open are skipped).')
 
         Add-Type -AssemblyName System.Windows.Forms
         $answer = [System.Windows.Forms.MessageBox]::Show(
