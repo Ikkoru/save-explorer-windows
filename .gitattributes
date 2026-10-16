@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# The scripts write this one with CRLF, for Notepad
+*.ini text eol=crlf

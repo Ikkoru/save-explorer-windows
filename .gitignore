@@ -1,0 +1,8 @@
+# Session snapshots the save script writes: personal paths, one per run.
+# Keep them out of history; remove this line to track them.
+Restore Explorer Session *.ps1
+/Saved sessions/
+# Where 6.0 and 6.1 kept them, until an automatic run moves them
+/Automatic backups/
+/Manual saves/
+_tmp/
