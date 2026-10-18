@@ -4,7 +4,7 @@
 
 Save Explorer Windows enumerates open Windows Explorer windows (and their tabs), then writes a **self-contained restore `.ps1`** that reopens them with the same window/tab grouping: by hand, or every two hours from Task Scheduler (`-Auto`), which also cleans up old backups and warns about folders lost to a restart, a sign-out, a crash or a big drop.
 
-`Save Explorer Windows.ps1` is the entry point and `Explorer Windows Shared.psm1` everything else; the module must sit beside the script. The version is `$ProgramVersion` in the module, not in the file name. `Set up automatic backups.ps1` installs, updates or removes the scheduled task for a person. `README.md` is for people using it, in plain words for someone who doesn't code; keep it true when behaviour changes. `Tests\Run tests.ps1` checks the module. The previous, single-file v5.3 is in the git history; its saves still read. Each save is one self-contained restore script; no `.bat` and no launcher.
+`Save Explorer Windows.ps1` is the entry point and `Explorer Windows Shared.psm1` everything else; the module must sit beside the script. The version is `$ProgramVersion` in the module, not in the file name. `Compare Explorer Backups.ps1` is the compare window: two sessions side by side, reopening chosen folders beside their old tab-mates, and the settings; `-ShowIncident` opens it for a loss. `Set up automatic backups.ps1` installs, updates or removes the scheduled task for a person. `README.md` is for people using it, in plain words for someone who doesn't code; keep it true when behaviour changes. `Tests\Run tests.ps1` checks the module. The previous, single-file v5.3 is in the git history; its saves still read. Each save is one self-contained restore script; no `.bat` and no launcher.
 
 A frozen Explorer window is expected, not exceptional: its tabs are skipped after a per-tab deadline (`$TabReadTimeoutMs`), counted, and described from Win32 data, and the rest of the session is saved normally (trap 11).
 
@@ -25,7 +25,7 @@ Each was hit and diagnosed here; the rule file has the full account. Do not "sim
 3. **An elevated process sees no non-elevated Explorer windows.** Keep the warning for zero windows while elevated.
 4. **`ConvertFrom-Json` unwraps one-element arrays**: the groups are re-cast with `,[string[]]@($_)`, both parts required.
 5. **Path data travels as base64 of UTF-8 JSON**, never as literals in the generated script: the tooling layers around COM garble paths otherwise.
-6. **Tabs are navigated through COM** (`Navigate2`, polling `Busy`), never by keystrokes; `Ctrl+T` is the one irreducible keystroke.
+6. **Tabs are added and navigated without keystrokes**: a new tab is asked for with `WM_COMMAND 0xA21B` posted to the window's `ShellTabWindowClass`, which lies several levels down (`RequestNewTab`), then `Navigate2`, polling `Busy`. Only a restore file falls back to `Ctrl+T`, when a window does not answer; the compare window never presses keys.
 7. **COM identity is compared by IUnknown pointer** (`Get-ComId`), released in a `finally`.
 8. **Poll with `Wait-For`, don't sleep**; the two fixed sleeps that remain are deliberate.
 9. **Each tab navigates in its own `try/catch`**, so one bad path doesn't abort the window's other tabs.
@@ -69,8 +69,8 @@ The maintainer's scheduled task runs `Save Explorer Windows.ps1` from this folde
 ## Known limitations
 
 - **Tab restore needs Windows 11 22H2+.** On older builds each path opens as a separate window.
-- **Disable IME before running the restore script.** An active Japanese IME can swallow the `Ctrl+T` keystroke. Documented in the generated script's header; no script-side fix exists.
-- **Restore is UI-driven and steals focus.** Don't type during restore.
+- **An IME can still swallow the restore's fallback `Ctrl+T`**, used only when a window does not answer the tab request, and by restore files written before 7.0, which always press it.
+- **Restore opens windows, and each new window takes the keyboard.** Don't type during restore.
 - **Running a restore needs the maintainer's go-ahead**: a stray key or click of theirs lands in it. Unless they have said they are away.
 - **Tab order within a window** follows COM enumeration order, which usually but not always matches visual left-to-right order.
 - **A frozen window's paths are reported, not recovered.** Its tabs are skipped after the per-tab deadline each and described from Win32 data (title, HWND, PID, placement, hung flag). A path only survives in the rare case where the tab answered `LocationURL` before blocking; the usual block point is `Windows().Item($i)`, which yields nothing. Windows 11 draws the address bar in XAML, so even `WM_GETTEXT` gives nothing back, and the title is all there is. Closing the hung window and re-running the save script captures everything else cleanly.

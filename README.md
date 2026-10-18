@@ -1,6 +1,6 @@
 # Save Explorer Windows
 
-Saves the File Explorer windows and tabs you have open, so you can reopen them all after a restart, a crash or a mistake. It can do this by itself every two hours, and warns you when folders seem to have been lost.
+Saves the File Explorer windows and tabs you have open, so you can reopen them all after a restart, a crash or a mistake. It can do this by itself every two hours, warns you when folders seem to have been lost, and shows what changed so you can reopen just those.
 
 For Windows 11 (version 22H2 or newer, which has tabs in File Explorer). Nothing to install: it uses Windows PowerShell, which comes with Windows.
 
@@ -8,7 +8,7 @@ For Windows 11 (version 22H2 or newer, which has tabs in File Explorer). Nothing
 
 1. On this page, click **Code**, then **Download ZIP**.
 2. Unpack it into a folder you will keep, for example `Documents\Save Explorer Windows`. Not in Downloads: the automatic backups run the script from wherever it is, so it should stay put.
-3. Keep the files together. `Save Explorer Windows.ps1`, `Explorer Windows Shared.psm1` and `Settings.ini` need each other.
+3. Keep the files together: the scripts all need `Explorer Windows Shared.psm1` and `Settings.ini` beside them.
 
 If Windows refuses to run a file because it came from the internet: right-click it, choose **Properties**, tick **Unblock** at the bottom, and click **OK**.
 
@@ -33,24 +33,34 @@ Run the setup normally, not "as administrator". If you do want to set it up by h
 Right-click a `Restore Explorer Session ... .ps1` file and choose **Run with PowerShell**.
 
 - Folders that are already open are skipped, so it is safe to run after only some were lost.
-- Each window opens maximized, and its tabs are added one by one. **Don't use the keyboard or mouse until it says "Done"**: it opens tabs by pressing Ctrl+T for you, and a click elsewhere can send that keypress to the wrong window.
-- If you type in Japanese, Chinese or Korean, switch the input method to plain English letters first, or it can swallow that keypress.
+- Each window opens maximized, and its tabs are added one by one. Leave the keyboard alone until it says "Done": each new window takes the keyboard as it appears.
 - Tabs come back in the order Windows lists them, which is usually, but not always, the order they had.
+- To bring back only some folders, or to put them back beside tabs that are still open, use the compare window instead.
 
-## The "folders lost?" message
+## The compare window
 
-After an automatic backup, a message can appear saying some folders that were open earlier are no longer open. It appears when:
+Right-click `Compare Explorer Backups.ps1` and choose **Run with PowerShell**. It shows two lists side by side, each one a saved session, or what is open right now. Pick them in the boxes above the lists.
+
+- Folders are grouped by the window they were in.
+- **Red** on the left: in the left session but not the right. **Orange** on the right: in the right session but not the left. So with an older backup on the left and a newer one on the right, red is what got lost and orange is what is new.
+- Tick folders in either list and click **Open ticked**. Each one opens as a tab beside the tabs it used to be with, if any of those are open now; otherwise in a new window, which the rest of its old tabs then join. Folders already open are skipped.
+- **Tick all missing** ticks every red folder.
+- **Settings...** changes when the "folders lost?" warning appears, and how many backups are kept.
+
+## The "folders lost?" warning
+
+After an automatic backup, the compare window can open by itself, saying some folders that were open earlier are no longer open. It does when:
 
 - the PC restarted, you signed out, or File Explorer crashed, and at least one folder did not come back, or
 - many folders vanished at once without any of that: by default at least 3, and at least half of what was open.
 
-The backup from before the loss is kept safe until you answer. **Yes** (you closed them yourself) lets it be cleaned up later like any other. **No** keeps it and shows it in File Explorer, so you can run it to reopen what is missing.
+The left list then shows the last backup from before the loss, with the lost folders in red. That backup is kept safe until you click **Mark as checked**. Tick the folders you want back and click **Open ticked**; if you closed them yourself, just click **Mark as checked**. The window stays on top until you have clicked into it and moved on.
 
 ## Good to know
 
-- **Nothing is saved when no folder is open.** Closing all your folders counts as on purpose: no message, and folders you open later are not compared with the ones from before. Your last full backup is not deleted because of this.
+- **Nothing is saved when no folder is open.** Closing all your folders counts as on purpose: no warning, and folders you open later are not compared with the ones from before. Your last full backup is not deleted because of this.
 - **It waits after a restart.** For 5 minutes after you sign in, Windows is still reopening your folders, so a backup due in that time waits until they are back.
-- **Old backups are cleaned up.** A new backup with exactly the same folders replaces the older one. Of the rest, the newest 20 are kept. Saves made by hand are never cleaned up, and a backup kept for a "folders lost?" message stays until you answer it.
+- **Old backups are cleaned up.** A new backup with exactly the same folders replaces the older one. Of the rest, the newest 20 are kept. Saves made by hand are never cleaned up, and a backup kept for a "folders lost?" warning stays until you mark it as checked.
 - **A frozen File Explorer window is skipped.** If a window stops responding, its tabs are left out after 2 seconds each, and the save lists what it could not read. If File Explorer is stuck entirely, nothing can be saved until it recovers. Don't end File Explorer in Task Manager to fix it: all your folder windows live in it and would close.
 - **Your saves list your folders.** Every file in `Saved sessions` names the folders you had open, so treat them as private. A `.kopiaignore` file in each keeps them out of Kopia backups. If you sync this folder with Syncthing, add `Saved sessions` to its ignore list. Other backup or sync tools need telling separately.
 - **Don't rename `Save Explorer Windows.ps1`.** The automatic backups look for it by name. If you move the folder, run the setup again.
@@ -59,14 +69,14 @@ The backup from before the loss is kept safe until you answer. **Yes** (you clos
 
 ## Settings
 
-Open `Settings.ini` in Notepad, change a value after the `=` sign, and save. The next automatic backup uses it.
+Click **Settings...** in the compare window, or open `Settings.ini` in Notepad, change a value after the `=` sign, and save. The next automatic backup uses it.
 
 | Setting | Default | What it does |
 |---|---|---|
 | `KeepBackups` | 20 | How many automatic backups to keep |
-| `Warnings` | on | `off` turns the "folders lost?" message off completely |
-| `RestartMinFolders` | 1 | After a restart, sign-out or crash: how many folders must be missing for the message |
-| `DropWarnings` | on | `off`: no message when folders vanish without a restart |
+| `Warnings` | on | `off` turns the "folders lost?" warning off completely |
+| `RestartMinFolders` | 1 | After a restart, sign-out or crash: how many folders must be missing for the warning |
+| `DropWarnings` | on | `off`: no warning when folders vanish without a restart |
 | `DropMinFolders` | 3 | ...how many folders must vanish at once |
 | `DropMinPercent` | 50 | ...and what share of the open folders that must be |
 
@@ -76,4 +86,4 @@ Run `Set up automatic backups.ps1` and type **R**, then delete the folder.
 
 ## For the curious
 
-`DOC.md` explains how it works inside. `Tests\Run tests.ps1` checks the rules for cleanup and the "folders lost?" message without touching your windows.
+`DOC.md` explains how it works inside. `Tests\Run tests.ps1` checks the rules for cleanup, the "folders lost?" warning and where reopened folders go, without touching your windows.

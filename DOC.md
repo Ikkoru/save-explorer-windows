@@ -10,6 +10,7 @@ How the program is put together and what it does at runtime. `CLAUDE.md` holds t
 |---|---|
 | `Save Explorer Windows.ps1` | The entry point: a save by hand, `-Auto` for the scheduled run, `-ShowIncident` for the lost-folder window. Its name stays fixed, since the scheduled task names it |
 | `Explorer Windows Shared.psm1` | Everything else: the scan, the restore-file format, `Settings.ini`, `state.json`, and the cleanup and loss rules. Must sit beside the script. Holds the program's version, `$ProgramVersion`, which a run by hand prints and every save records |
+| `Compare Explorer Backups.ps1` | The compare window: two sessions side by side, reopening chosen folders beside their old tab-mates, settings. Run by a person, or by `-ShowIncident` for a loss |
 | `Set up automatic backups.ps1` | Installs, updates or removes the scheduled task, from `New-AutoBackupTask` in the module. Run by a person; asks before changing anything, and refuses to run elevated |
 | `Settings.ini` | The automatic backups' settings, each explained in the file. Rewritten with the defaults when missing; an unreadable value counts as its default and is logged |
 | `Tests\Run tests.ps1` | The module's checks. Needs no open Explorer window, and never registers a task |
@@ -39,7 +40,7 @@ Running a restore script reopens its session with the original window/tab groupi
 5. Under the mutex `Local\SaveExplorerWindows.State`, `Update-AutomaticBackups` picks the comparison point, checks for restarts, releases finished locks, judges the loss, locks, saves, cleans up, logs, decides on the window and writes the state.
 6. For a new loss, starts `-ShowIncident` as a separate hidden process, so this run ends and the next can start while the window waits.
 
-**`-ShowIncident`**: a MessageBox about the newest loss (Yes/No, No by default, `DefaultDesktopOnly` so it stays on top without taking focus): the missing folders' names with their parent folder, the cause, and the locked file. Yes releases the lock (`Remove-BackupIncident`, logged). No keeps it and opens Explorer with that backup selected. A placeholder until the compare window (*Next*).
+**`-ShowIncident`**: takes the mutex `Local\SaveExplorerWindows.IncidentWindow` and runs the compare window (*The compare window*) in the same process for the newest loss. A copy without `Compare Explorer Backups.ps1` falls back to a MessageBox (Yes releases the lock; No keeps it and shows the backup in Explorer).
 
 **Parameters**: `-BackupFolder`, `-ManualFolder`, `-SettingsPath` (each defaulting to beside the script), and `-NoWindow`, which with `-Auto` records a loss without opening the window, for tests. A start in an MTA host relaunches with `-STA` and passes them on.
 
@@ -64,21 +65,31 @@ Save Explorer Windows.ps1
 ├─ Frozen-tab report: Add-ReportLine / Format-ReportText, New-FrozenReport
 ├─ By hand: label prompt → Invoke-ExplorerScan → report → Saved sessions\Manual saves\
 ├─ -Auto: mutex → settings → wait for Explorer to settle → scan → Update-AutomaticBackups → maybe -ShowIncident
-├─ -ShowIncident: MessageBox → Remove-BackupIncident, or show the locked file
+├─ -ShowIncident: the compare window, in this process (MessageBox if it is missing)
 └─ finally: [Environment]::Exit if a COM worker was abandoned
+
+Compare Explorer Backups.ps1
+├─ hide the console; read backups (both folders), state.json, the incident shown
+├─ two sides: drop-down (a backup, or "Open right now" on the right) + ListView by window
+├─ Get-CompareRows → colours; Tick all missing / Untick all / Refresh / Mark as checked
+├─ Open ticked: Invoke-ExplorerScan → New-OpenPlan → Invoke-OpenPlan on its own STA runspace, polled by a timer
+├─ Settings...: a dialog → Write-BackupSettings
+└─ -RenderTo: draw the window and the dialog to PNGs, for tests
 
 Explorer Windows Shared.psm1
 ├─ COM worker: New-ComWorker / Reset-ComWorker, Invoke-ComStep,
 │  Resolve-ComError, $RpcFailureHResults, $ReadWindowScript / $CountWindowsScript
-├─ ExplorerWindowProbe2 (C#, @"..."@): the Win32 view, and the taskbar's process
+├─ ExplorerWindowProbe3 (C#, @"..."@): the Win32 view, and the taskbar's process
 ├─ Invoke-ExplorerScan, Get-ScanGroups, Test-ScanComplete
 ├─ Compare-SessionFolders, Test-SameFolders, Get-FolderDisplayName
 ├─ $RestoreTemplate (@'...'@), Write-RestoreScript, Read-SessionBackup, Get-SessionBackups
-├─ Settings.ini: Read-BackupSettings, Write-DefaultSettingsFile
+├─ Settings.ini: Read-BackupSettings, Write-DefaultSettingsFile, Write-BackupSettings
 ├─ state.json: Read-BackupState, Write-BackupState; Write-BackupLog; named mutexes
 ├─ Get-ExplorerRestartInfo, Get-LostFolderVerdict, Get-CleanupPlan
 ├─ Update-AutomaticBackups, Remove-BackupIncident
 ├─ Get-DefaultPaths, Move-LegacySaveFolders, Resolve-SaveFolder, Initialize-SaveFolder
+├─ The compare window's logic: Get-CompareRows, New-OpenPlan (pure), Invoke-OpenPlan,
+│  Open-ShellWindow, Add-ShellTab, Get-ComIdentity
 └─ The task: Get-AutoBackupTaskName, New-AutoBackupTask, Get-TaskScriptPath
 
 Set up automatic backups.ps1
@@ -175,9 +186,9 @@ Every restore script and `state.json` lists open folders.
 
 ## The generated restore script
 
-Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, a P/Invoke block for `SetForegroundWindow`/`ShowWindow`, `Open-ExplorerGroup` and `Select-MissingFolders`.
+Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, the `SewRestoreApi` P/Invoke class (`RequestNewTab`, `SetForegroundWindow`, `ShowWindow`), `Open-ExplorerGroup` and `Select-MissingFolders`.
 
-First it reads the paths open now and drops them from the saved windows (`Select-MissingFolders`): as a multiset, ignoring letter case, so a folder open once is skipped once. A window left with no folders is not opened. A restore run again after a partial loss therefore reopens only what is missing; a missing folder whose tab-mates are still open opens in a window of its own, not beside them (the compare window, *Next*, is to fix that). Restore scripts written before 6.4 lack this and open everything. Reading the open paths goes through COM on the main thread, so a frozen Explorer window holds the restore up until it is closed.
+First it reads the paths open now and drops them from the saved windows (`Select-MissingFolders`): as a multiset, ignoring letter case, so a folder open once is skipped once. A window left with no folders is not opened. A restore run again after a partial loss therefore reopens only what is missing; a missing folder whose tab-mates are still open opens in a window of its own, not beside them (the compare window does that). Restore scripts written before 6.4 lack this and open everything. Reading the open paths goes through COM on the main thread, so a frozen Explorer window holds the restore up until it is closed.
 
 Then, per window group left:
 
@@ -186,11 +197,30 @@ Then, per window group left:
 3. `ShowWindow(hwnd, 3)`: SW_MAXIMIZE
 4. For each additional path:
    - snapshot COM identities of existing tabs
-   - `SetForegroundWindow` → `SendKeys '^t'`
-   - poll for a tab with matching HWND and a new COM identity
+   - `RequestNewTab`: `WM_COMMAND 0xA21B` posted to the window's `ShellTabWindowClass`, found among all its descendants; no keystrokes, no focus needed
+   - poll up to 3 s for a tab with matching HWND and a new COM identity
+   - none: `SetForegroundWindow` → `SendKeys '^t'`, poll again (this fallback needs focus and no IME)
    - `$newTab.Navigate2($path)`
    - poll `$newTab.Busy` until false
    - re-maximize
+
+Restore files written before 7.0 always press Ctrl+T.
+
+---
+
+## The compare window
+
+`Compare Explorer Backups.ps1`, a WinForms window. Started by hand, or by `-ShowIncident` for a loss.
+
+**What it shows.** Each side has a drop-down of every readable save in both save folders, newest first (automatic or by hand, label, folder count; a locked one marked "kept after a loss", an incomplete one "incomplete"); the right side also offers "Open right now", a fresh `Invoke-ExplorerScan`. By default: for a loss, its locked backup against its current file (or "Open right now" when that file is gone); otherwise the second-newest automatic backup against the newest. The lists are `ListView`s grouped by window. `Get-CompareRows` marks a left row red when the right lacks it and a right row orange when the left lacks it, pairing as `Compare-SessionFolders` does.
+
+**Opening.** "Open ticked" scans what is open now, builds a plan with `New-OpenPlan`, and hands it to `Invoke-OpenPlan` on a separate STA runspace, which a timer polls for progress; a frozen Explorer window can then hold up only the opening, never the window. The plan skips folders already open; any other folder goes in as a tab of the window holding most of its former tab-mates (open now, or opened earlier in the plan), else into a new window that its later tab-mates join. `Add-ShellTab` asks for tabs with `RequestNewTab` only; when a window does not answer, the folder opens in a new window instead and its later tab-mates follow it there. Nothing in the compare window presses keys.
+
+**Other buttons.** "Tick all missing" ticks every red row. "Mark as checked" calls `Remove-BackupIncident`. "Settings..." edits the six values of `Settings.ini` with controls bounded by their allowed ranges and writes it with `Write-BackupSettings`, which keeps the template's explanations but not a person's own comments.
+
+**Behaviour.** The console window a "Run with PowerShell" start leaves behind is hidden; errors go to a message box. Opened for a loss, the window stays on top until the person has been in it and moved on. On closing, a process with a scan or an opening still stuck on a frozen window ends with `[Environment]::Exit`.
+
+**Testing it.** `-RenderTo <png>` builds the window from whatever saves the folder parameters point at, draws it and the settings dialog to PNGs, and quits, for looking at with fake sessions. Clicks can be driven with UI Automation, but from Windows PowerShell every WinForms control shows only as a pane with no InvokePattern: find a button by its name and post `BM_CLICK` (`0x00F5`) to its `NativeWindowHandle`.
 
 ---
 
@@ -235,30 +265,10 @@ Raise these with the maintainer when work next touches them; each is theirs to s
 
 Before each: `git grep` over `master`'s tree for private data (machine paths, people's names, e-mail addresses, window titles or folder names from a real session; `CLAUDE.md` trap 16), and only `public` is pushed, never `master`.
 
-## Next: the compare window
-
-Asked for, not started:
-
-- Two lists side by side: the current backup and the previous one. Red: folders of the previous backup it counts as missed. Orange: folders in the current backup the previous one lacks.
-- Select folders from either list and open them now. Where a currently open window holds a former tab-mate of a selected folder, open the selected one as a tab in that window, so tabs that were together stay together as far as possible.
-- It opens by itself when a loss is found: `-ShowIncident` hands over to it instead of the MessageBox.
-- A way to change the settings: how many folders it takes to warn, whether drops warn, whether it warns at all.
-
-What the module already has for it: `Get-SessionBackups` and `Read-SessionBackup` (`Groups`, `Names`, `SavedAt`, `Kind`, `Complete`), `Compare-SessionFolders` (`Missing` and `Added`, each with its window and tab position), `Invoke-ExplorerScan` with `Get-ScanGroups` (`-Names`) for what is open now, `Read-BackupState` (an incident gives the locked backup, the current file and the missing paths), `Remove-BackupIncident` for a "mark as checked" button, `Read-BackupSettings` and `Write-DefaultSettingsFile`, `Get-FolderDisplayName`, and `Get-DefaultPaths().Compare` for the window's own file name.
-
-Suggested design:
-
-- A dropdown above each list: by default an incident's locked backup against its current file, otherwise the two newest automatic backups; saves by hand listed too, and "open right now" offered on the right.
-- Rows grouped by window, with checkboxes. Buttons: select all missing, open selected, refresh, mark as checked.
-- Opening: skip folders already open. For each selected folder, find the open window holding the most of its former tab-mates and add a tab there; otherwise open it in a new window, which later tab-mates then join. Repeat until nothing is left.
-- `Shell.Application.Open()` opens a new window; no "open in new tab" behaviour has been seen. The restore script's Ctrl+T route needs focus and the IME off. Try ways that need no focus first: `WM_COMMAND 0xA21B` sent to the window's `ShellTabWindowClass` child, or `Navigate2` with `navOpenInNewTab` (0x800). Needs live testing.
-- COM objects made on the scan's worker runspace cannot be used from the window's thread: open tabs through a `Shell.Application` made on the window's thread, or on another worker.
-- WinForms works (the MessageBox does). Keep the script ASCII, and launch it without a console flash: `conhost.exe --headless powershell.exe -STA -File ...`.
-
 ## Later
 
 1. **A UIA fallback for a dead COM service.** When the shell window service is unreachable (trap 12) nothing can be read, but windows that still answer messages would likely give up their active tab's path through UI Automation: a partial save instead of none. Per window, not per tab.
 2. **Restore tab order deterministically.** COM enumeration order usually matches visual order but is not guaranteed. Check whether `IShellBrowser` exposes a tab index.
 3. **Preserve window geometry.** Everything is maximized; `GetWindowRect` at save time and `SetWindowPos` at restore would keep other layouts.
 4. **Record the active tab.** Restore leaves the last-opened tab focused.
-5. **Drop the `Ctrl+T` SendKeys** if a way to open a tab without focus works (*Next*). It is the last fragile piece and the only reason IME must be off during restore.
+5. **Restore files could put folders beside open tab-mates** as the compare window does, instead of opening each saved window anew; they would need `New-OpenPlan`'s logic inside the file, since a restore file stands alone.

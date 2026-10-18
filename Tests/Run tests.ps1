@@ -226,6 +226,41 @@ try {
     Check 'legacy folders: used where they are until moved' ((Resolve-SaveFolder (Join-Path $lr2 'Saved sessions\Automatic backups') (Join-Path $lr2 'Automatic backups')) -eq (Join-Path $lr2 'Automatic backups') -and
         (Resolve-SaveFolder (Join-Path $lr 'Saved sessions\Automatic backups') (Join-Path $lr 'Automatic backups')) -eq (Join-Path $lr 'Saved sessions\Automatic backups'))
 
+    # --- The compare window's logic -----------------------------------------
+
+    $cr = Get-CompareRows -Before (G 'C:\A', 'C:\B' 'C:\C') -After (G 'c:\b' 'C:\D') -BeforeNames @([string[]]@('Aye', ''), [string[]]@('See'))
+    Check 'compare: rows in window and tab order, marked missing or same' ((($cr.Before | ForEach-Object { '{0}{1}{2}' -f $_.Window, $_.Tab, $_.Status }) -join ' ') -eq '00missing 01same 10missing')
+    Check 'compare: the right side marks what is new' ((($cr.After | ForEach-Object { '{0}:{1}' -f $_.Path, $_.Status }) -join ' ') -eq 'c:\b:same C:\D:added')
+    Check 'compare: saved names are used, the folder name when there is none' ((($cr.Before | ForEach-Object Name) -join '|') -eq 'Aye|B|See')
+    Check 'compare: an empty side gives no rows' (@((Get-CompareRows -Before @() -After (G 'C:\A')).Before).Count -eq 0)
+
+    function Sel { param([string]$Path, [string[]]$Group) [pscustomobject]@{ Path = $Path; Group = $Group } }
+    function Win { param([string]$Key, [string[]]$Paths) [pscustomobject]@{ Key = $Key; Paths = $Paths } }
+    function Steps { param($Plan) ($Plan.Steps | ForEach-Object { '{0} {1} {2}' -f $_.Kind, $_.Key, $_.Path }) -join '; ' }
+    $abc = [string[]]@('C:\A', 'C:\B', 'C:\C')
+    $xy  = [string[]]@('C:\X', 'C:\Y')
+    $plan = New-OpenPlan -Selected @((Sel 'C:\A' $abc), (Sel 'C:\B' $abc), (Sel 'C:\C' $abc), (Sel 'C:\X' $xy), (Sel 'C:\Y' $xy)) -Open @((Win '100' @('c:\a')))
+    Check 'open plan: an open folder is skipped, its tab-mates join its window' ((Steps $plan) -eq 'Tab 100 C:\B; Tab 100 C:\C; Window new1 C:\X; Tab new1 C:\Y' -and $plan.Skipped -eq 1)
+    $plan = New-OpenPlan -Selected @((Sel 'C:\D' ([string[]]@('C:\A', 'C:\B', 'C:\C', 'C:\D')))) -Open @((Win '1' @('C:\A')), (Win '2' @('C:\B', 'C:\C')))
+    Check 'open plan: the window holding most tab-mates wins' ((Steps $plan) -eq 'Tab 2 C:\D')
+    $plan = New-OpenPlan -Selected @((Sel 'C:\Q' ([string[]]@('C:\Q'))), (Sel 'c:\q' ([string[]]@('c:\q')))) -Open @()
+    Check 'open plan: a folder ticked twice opens once' ((Steps $plan) -eq 'Window new1 C:\Q' -and $plan.Skipped -eq 1)
+    $plan = New-OpenPlan -Selected @((Sel 'C:\M' ([string[]]@('C:\M', 'C:\N')))) -Open @((Win '7' @('C:\Unrelated')))
+    Check 'open plan: no tab-mate open means a new window' ((Steps $plan) -eq 'Window new1 C:\M')
+
+    # --- Writing Settings.ini -----------------------------------------------
+
+    $ini2 = Join-Path $tmp 'Settings2.ini'
+    Write-BackupSettings -Path $ini2 -Values ([pscustomobject]@{ KeepBackups = 7; Warnings = $false; RestartMinFolders = 2; DropWarnings = $false; DropMinFolders = 5; DropMinPercent = 80 })
+    $w2 = Read-BackupSettings -Path $ini2
+    Check 'settings: written values read back' ($w2.Problems.Count -eq 0 -and $w2.KeepBackups -eq 7 -and -not $w2.Warnings -and $w2.RestartMinFolders -eq 2 -and
+        -not $w2.DropWarnings -and $w2.DropMinFolders -eq 5 -and $w2.DropMinPercent -eq 80)
+    $w2text = [IO.File]::ReadAllText($ini2, [Text.Encoding]::UTF8)
+    Check 'settings: the written file keeps its explanations, CRLF' ($w2text.Contains('; How many automatic backups to keep') -and $w2text.Contains("KeepBackups = 7`r`n"))
+    $threw = $false
+    try { Write-BackupSettings -Path $ini2 -Values ([pscustomobject]@{ DropMinPercent = 101 }) } catch { $threw = $true }
+    Check 'settings: a value out of range is refused, the file left alone' ($threw -and (Read-BackupSettings -Path $ini2).DropMinPercent -eq 80)
+
     # --- The scheduled task (defined, never registered here) -----------------
 
     $taskScript = 'C:\Some folder, etc\Save Explorer Windows.ps1'

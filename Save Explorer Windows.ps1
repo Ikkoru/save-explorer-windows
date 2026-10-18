@@ -497,6 +497,17 @@ function Show-IncidentWindow {
         $incident = @($state.Incidents | Sort-Object -Property { $_.DetectedAt } -Descending) | Select-Object -First 1
         if (-not $incident) { return }
 
+        # The compare window shows the loss with both sessions side by side
+        # and reopens folders beside their old tab-mates. It runs in this
+        # process, which holds the window's mutex for as long as it is open.
+        # The message box below is for a copy without it.
+        $compare = (Get-DefaultPaths).Compare
+        if ([IO.File]::Exists($compare)) {
+            & $compare -Incident -IncidentId $incident.Id -BackupFolder $Folder `
+                -ManualFolder (Resolve-SaveFolder $ManualFolder $legacyManual) -SettingsPath $SettingsPath
+            return
+        }
+
         # Names with their parent folder, not full paths: the message box
         # wraps long lines wherever it likes.
         $missing = @($incident.Missing)

@@ -88,13 +88,17 @@ Emoji survive because JSON escapes surrogate pairs as `\uXXXX\uXXXX`.
 
 Do not replace this with plain-text path literals in the generated script, no matter how much cleaner it looks.
 
-### 6. Navigate tabs via COM, not keystrokes
+### 6. Add and navigate tabs without keystrokes
 
 Do **not** drive tab navigation with `Alt+D` → clipboard → `Ctrl+V` → `Enter`. That path is slow, IME-fragile, and depends on the address bar's state.
 
-Instead: snapshot COM object identities → `Ctrl+T` → poll for the new tab entry → `$newTab.Navigate2($path)` → poll `$newTab.Busy` until false.
+Instead: snapshot COM object identities → ask the window for a new tab → poll for the new tab entry → `$newTab.Navigate2($path)` → poll `$newTab.Busy` until false.
 
-`Ctrl+T` via `SendKeys` is the **only** keystroke that remains, because there is no COM method to open a new tab in an existing Explorer window. It is irreducible; don't spend time hunting for an alternative unless the Windows Shell API gains one.
+No COM method opens a tab in an existing window, but the window's own command does: `WM_COMMAND` with `0xA21B`, posted to its `ShellTabWindowClass`. That child sits several levels below the top window, so `FindWindowEx` misses it; search all descendants (`EnumChildWindows`). Measured on this PC: tabs added beside the first, the foreground window unchanged, no keystrokes. `ExplorerWindowProbe3.RequestNewTab` in the module and `SewRestoreApi.RequestNewTab` in the restore template both do this.
+
+`Ctrl+T` through `SendKeys` remains only as the restore template's fallback, when no new tab appears within 3 s. It needs `SetForegroundWindow` first and is swallowed by an active IME. The compare window has no such fallback: a window that does not answer gets the folder in a new window instead.
+
+`WM_CLOSE` posted to a window with several tabs may close only some of them. A test that closes its own Explorer windows repeats it until `IsWindow` says the window is gone (`ExplorerWindowProbe3.Close`, `WindowExists`); `Quit()` on a tab's COM object did not close the window either.
 
 ### 7. COM object identity needs IUnknown pointers
 
@@ -106,7 +110,7 @@ Two RCWs (runtime callable wrappers) for the same underlying COM object are not 
 
 Fixed sleeps between every UI step are fragile on slow machines and wasteful on fast ones.
 
-The `Wait-For` helper polls a predicate with a timeout. The only fixed sleeps are 150 ms after `SetForegroundWindow` (to let focus settle before `Ctrl+T`) and 200 ms between window groups.
+The `Wait-For` helper polls a predicate with a timeout. The only fixed sleeps are 150 ms after `SetForegroundWindow` (to let focus settle before the fallback `Ctrl+T`) and 200 ms between window groups.
 
 ### 9. Per-tab error isolation
 
@@ -211,7 +215,7 @@ grep -n "^'@" "$s" "$m"          # each line listed ENDS a here-string (trap 10)
 grep -n '^"@' "$s" "$m"          # likewise: the C# probe's
 grep -n '\[int\].*HWND' "$s" "$m"   # must be empty (trap 1)
 grep -c 'GetApartmentState' "$s" "$m"   # the script's guard; the template's guard and the printed state
-LC_ALL=C grep -c '[^ -~	]' "$s" "$m" "Tests/Run tests.ps1"   # 0 each: pure ASCII
+LC_ALL=C grep -c '[^ -~	]' *.ps1 "$m" "Tests/Run tests.ps1"   # 0 each: pure ASCII
 ```
 
 Then:
@@ -220,8 +224,9 @@ Then:
 2. **A parse** of the script and the module (`[Management.Automation.Language.Parser]::ParseFile`, errors empty). The tests parse a written restore file.
 3. **A live run by hand**, twice, with `-ManualFolder` in the scratchpad: once with an empty label, once with `debug`, since the two report levels are rendered by different filters over the same lines. Answer the prompts by redirecting stdin (`"label`n`n" | powershell -File ...`). The apartment state should print `STA`, the window count should match reality, and the process should exit rather than hang after the final prompt.
 4. **A live `-Auto -NoWindow` run** with `-BackupFolder` and `-SettingsPath` in the scratchpad: `log.txt` gets one line, and the save folder holds a `.kopiaignore`. A change to the default folders or the move from old ones is run from a copy of the script and module in the scratchpad, with no folder parameters, laid out as the old version left it.
-5. **Restoring** reopens windows on the maintainer's screen and needs their go-ahead. The tests take `Select-MissingFolders` out of a written restore file and run it, which covers what a restore would open.
-6. **A change to the task's definition**: the tests check `New-AutoBackupTask`; compare it with the registered task field by field (`Get-ScheduledTask`, read-only), and run `Set up automatic backups.ps1` only answering Q, which reads the task and changes nothing.
+5. **Restoring and opening** put windows on the maintainer's screen: they need the go-ahead, or the maintainer away. Then test only on folders made in the scratchpad, plan only into windows on those folders, and close every one of them after (trap 6). The tests take `Select-MissingFolders` out of a written restore file and run it, and check `New-OpenPlan`, which covers what would open where.
+6. **The compare window**: `-RenderTo <png>` with the folder parameters pointing at fake sessions in the scratchpad, made with `Write-RestoreScript` and `Write-BackupState` on made-up paths; look at the picture and its `.settings.png`. To drive it, start it (or `-ShowIncident`) with those parameters and post `BM_CLICK` to buttons found by name through UI Automation (`DOC.md`, *The compare window*).
+7. **A change to the task's definition**: the tests check `New-AutoBackupTask`; compare it with the registered task field by field (`Get-ScheduledTask`, read-only), and run `Set up automatic backups.ps1` only answering Q, which reads the task and changes nothing.
 
 Report counts only (trap 16).
 
