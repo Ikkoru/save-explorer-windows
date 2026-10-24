@@ -410,7 +410,7 @@ function Show-SettingsDialog {
     $d.MaximizeBox = $false; $d.MinimizeBox = $false
     $d.StartPosition = 'CenterParent'
     $d.Font = $form.Font
-    $d.ClientSize = New-Object System.Drawing.Size(500, 340)
+    $d.ClientSize = New-Object System.Drawing.Size(500, 370)
     $y = 14
     function New-Number { param([int]$Min, [int]$Max, [int]$Value)
         $n = New-Object System.Windows.Forms.NumericUpDown
@@ -449,10 +449,23 @@ function Show-SettingsDialog {
     $dropPct.Location = New-Object System.Drawing.Point(200, $y); $d.Controls.Add($dropPct)
     New-Text '% of the folders that were open' 276 $y
     $y += 44
-    New-Text 'Keep the newest' 16 $y
-    $keep = New-Number 1 1000 $s.KeepBackups
+    # Auto (KeepBackups 0) counts from the task's interval; the number box
+    # shows what auto comes to, so switching to a number starts there.
+    $interval = Get-AutoBackupInterval
+    $autoCount = Resolve-KeepCount -KeepBackups 0 -IntervalMinutes $interval
+    $keepAuto = New-Object System.Windows.Forms.RadioButton
+    $keepAuto.Text = ("Keep {0} hours of automatic backups ({1} at {2})" -f (Get-AutoKeepHours), $autoCount, (Format-TaskInterval $interval))
+    $keepAuto.AutoSize = $true; $keepAuto.Location = New-Object System.Drawing.Point(16, $y)
+    $d.Controls.Add($keepAuto)
+    $y += 30
+    $keepFixed = New-Object System.Windows.Forms.RadioButton
+    $keepFixed.Text = 'Keep the newest'
+    $keepFixed.AutoSize = $true; $keepFixed.Location = New-Object System.Drawing.Point(16, ($y + 2))
+    $d.Controls.Add($keepFixed)
+    $keep = New-Number 1 1000 $(if ($s.KeepBackups -gt 0) { $s.KeepBackups } else { [math]::Min($autoCount, 1000) })
     $keep.Location = New-Object System.Drawing.Point(200, $y); $d.Controls.Add($keep)
     New-Text 'automatic backups' 276 $y
+    $keepAuto.Checked = ($s.KeepBackups -eq 0); $keepFixed.Checked = ($s.KeepBackups -gt 0)
     $y += 46
     $ok = New-Object System.Windows.Forms.Button
     $ok.Text = 'Save'; $ok.Width = 90; $ok.Location = New-Object System.Drawing.Point(300, $y)
@@ -467,9 +480,11 @@ function Show-SettingsDialog {
         $drops.Enabled = $warn.Checked
         $dropMin.Enabled = $warn.Checked -and $drops.Checked
         $dropPct.Enabled = $warn.Checked -and $drops.Checked
+        $keep.Enabled = $keepFixed.Checked
     }
     $warn.Add_CheckedChanged($sync)
     $drops.Add_CheckedChanged($sync)
+    $keepFixed.Add_CheckedChanged($sync)
     & $sync
 
     if ($RenderOnly) {
@@ -482,7 +497,7 @@ function Show-SettingsDialog {
     }
     if ($d.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
     Write-BackupSettings -Path $SettingsPath -Values ([pscustomobject]@{
-        KeepBackups = [int]$keep.Value; Warnings = $warn.Checked; RestartMinFolders = [int]$restart.Value
+        KeepBackups = $(if ($keepAuto.Checked) { 0 } else { [int]$keep.Value }); Warnings = $warn.Checked; RestartMinFolders = [int]$restart.Value
         DropWarnings = $drops.Checked; DropMinFolders = [int]$dropMin.Value; DropMinPercent = [int]$dropPct.Value
     })
     Set-Status 'Settings saved. The next automatic backup uses them.'

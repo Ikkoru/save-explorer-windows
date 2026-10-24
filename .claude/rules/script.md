@@ -14,7 +14,7 @@ The prompt `Enter descriptive label (optional):` doubles as the only switch this
 
 The word is stripped from the label afterwards, so it never reaches the output filename — `debug session A` saves as `Restore Explorer Session <date>_session A.ps1`. Matching is `(?i)\bdebug\w*`: anchored at a word start and eating the rest of the word, so `debugging` counts, while `predebugged` is left alone rather than being gutted into `preged`.
 
-It is **not** mentioned at the prompt, and the only place it surfaces at all is a single grey hint printed after a run that already failed — the person who needs the full report is exactly the one who would not know to ask for it. Keep it to that: no mention on a clean run, and none in the prompt text.
+It is **not** mentioned at the prompt. The only place it surfaces at all is a single grey hint printed after a run that already failed: the person who needs the full report is exactly the one who would not know to ask for it. Keep it to that: no mention on a clean run, and none in the prompt text.
 
 Report levels, and what each line is tagged with in `Add-ReportLine`:
 
@@ -46,7 +46,7 @@ $hwnd = [int]$w.HWND      # WRONG — throws OverflowException on every window
 $hwnd = [int64]$w.HWND    # correct
 ```
 
-**Why this is insidious:** the throw usually lands inside a `try/catch` intended to skip non-folder windows. Every window gets silently classified as "not a folder window," and the script reports **"No Explorer folder windows are currently open"** while 20 windows are visibly open. The symptom points nowhere near the cause.
+**Why this is insidious:** the throw usually lands inside a `try/catch` intended to skip non-folder windows. Every window gets silently classified as "not a folder window," and the script reports **"No Explorer folder windows are currently open"** while windows are visibly open. The symptom points nowhere near the cause.
 
 **Diagnostic that found it:** printing the path *and* the skip message per window. Seeing the path print successfully and *then* "skipped" proved the failure was on the line after path extraction.
 
@@ -60,7 +60,7 @@ All HWND handling sites must use `[int64]`: dictionary keys, before/after snapsh
 - PowerShell 7 (`pwsh`) → MTA by default ❌
 - Windows Terminal / VS Code hosts → varies ❌
 
-Both the save script and the generated restore script carry a self-relaunch guard (`GetApartmentState()` → relaunch via `powershell.exe -STA`). Keep it in both. The script also prints its apartment state — leave that in; it makes this class of failure a one-line diagnosis.
+The save script, the compare window and the generated restore script each carry a self-relaunch guard (`GetApartmentState()` → relaunch via `powershell.exe -STA`). Keep it in all three. The script also prints its apartment state — leave that in; it makes this class of failure a one-line diagnosis.
 
 ### 3. Elevation breaks window visibility
 
@@ -120,7 +120,7 @@ Each tab's navigation is wrapped in its own `try/catch`. Without this, one bad p
 
 The restore template is a **single-quoted** here-string (`@'...'@`). Nothing inside is interpreted — no `$variable` expansion, no backtick escapes, no quote doubling. Keep it single-quoted: the moment it interpolates, every `$path` and `$_` in the template becomes an escaping problem.
 
-**The one constraint:** no line inside the template may begin with `'@`, or the here-string terminates early — silently, producing a truncated restore script that only fails when someone runs it. In v6 the template is `$RestoreTemplate` in the module, which holds other here-strings too (`$SettingsTemplate`, and the C# probe's `@"..."@`), so after every edit:
+**The one constraint:** no line inside the template may begin with `'@`, or the here-string terminates early — silently, producing a truncated restore script that only fails when someone runs it. The template is `$RestoreTemplate` in the module, which holds other here-strings too (`$SettingsTemplate`, and the C# probe's `@"..."@`), so after every edit:
 
 ```bash
 grep -n "^'@\|^\"@" "Explorer Windows Shared.psm1"   # each line listed must END a here-string
@@ -148,7 +148,7 @@ Three details are load-bearing:
 - **The process will not exit on its own** once a worker is parked in a COM call — verified: it hangs indefinitely after the last statement, even though runspace threads are background threads. The `finally` block ends with `[Environment]::Exit(0)` when anything was abandoned.
 - **The worker reads properties cheapest-first** (`HWND` → `LocationName` → `LocationURL` → `Document.Folder.Self.Path`) and publishes each into a synchronized `$Progress` hashtable, so a call that never returns still leaves behind whatever it managed to read. In practice a hung window blocks at `Windows().Item($i)` and yields nothing at all — which is why the Win32 probe below exists.
 
-To say anything about a tab that COM cannot reach, ask the window manager instead (`ExplorerWindowProbe`). It is safe against hung windows because nothing in it sends an untimed message: `GetWindowText` returns another process's cached caption by design, and child-control text goes through `SendMessageTimeout` with `SMTO_ABORTIFHUNG`. `IsHungAppWindow` names the culprit outright, and any Explorer HWND that no successful COM read reported is the window the frozen tabs belong to. The window title ("Downloads and 1 more tab - File Explorer") is realistically the only identifying information left.
+To say anything about a tab that COM cannot reach, ask the window manager instead (`Get-ExplorerWindowProbe`, over the C# class `ExplorerWindowProbe3`). It is safe against hung windows because nothing in it sends an untimed message: `GetWindowText` returns another process's cached caption by design, and child-control text goes through `SendMessageTimeout` with `SMTO_ABORTIFHUNG`. `IsHungAppWindow` names the culprit outright, and any Explorer HWND that no successful COM read reported is the window the frozen tabs belong to. The window title ("Downloads and 1 more tab - File Explorer") is realistically the only identifying information left.
 
 Note the C# for that probe is in a **double-quoted** here-string (`@"..."@`). That is deliberate: a single-quoted one would put a second line starting with `'@` in the file and silently truncate the restore template (trap #10).
 
@@ -184,7 +184,7 @@ Pure PowerShell writing a pure PowerShell file avoids all six. Nearly every bug 
 
 `Initialize-SaveFolder` gives each save folder a `.kopiaignore` holding `*`. On this machine Kopia's global policy reads `.kopiaignore` files, and `kopia snapshot estimate` over a folder holding one left out every file and subfolder below it, the marker included. A `CACHEDIR.TAG` would keep Kopia out as well, but the machine's delete guard treats any folder with a valid tag as disposable and lets deletes inside it through without the Recycle Bin, and these files are backups. The tests check that the marker holds `*`, that no `CACHEDIR.TAG` is written, and that an edited marker survives.
 
-Syncthing reads neither file; only the `.stignore` at a synced folder's root keeps a path out, on each device (`DOC.md`, *Keeping saves out of backups and sync*). `.gitignore` covers both folders.
+Syncthing reads neither file; only the `.stignore` at a synced folder's root keeps a path out, on each device (`DOC.md`, *Keeping saves out of backups and sync*). `.gitignore` covers `Saved sessions`.
 
 ### 15. The scheduled task names the script file
 
@@ -221,7 +221,7 @@ LC_ALL=C grep -c '[^ -~	]' *.ps1 "$m" "Tests/Run tests.ps1"   # 0 each: pure ASC
 Then:
 
 1. **The tests**: `powershell -NoProfile -ExecutionPolicy Bypass -File "Tests\Run tests.ps1"`, exit 0. A new rule gets a check, and the check is shown to fail on a broken copy of the module (`-ModulePath`).
-2. **A parse** of the script and the module (`[Management.Automation.Language.Parser]::ParseFile`, errors empty). The tests parse a written restore file.
+2. **A parse** of every script and the module (`[Management.Automation.Language.Parser]::ParseFile`, errors empty). The tests parse a written restore file.
 3. **A live run by hand**, twice, with `-ManualFolder` in the scratchpad: once with an empty label, once with `debug`, since the two report levels are rendered by different filters over the same lines. Answer the prompts by redirecting stdin (`"label`n`n" | powershell -File ...`). The apartment state should print `STA`, the window count should match reality, and the process should exit rather than hang after the final prompt.
 4. **A live `-Auto -NoWindow` run** with `-BackupFolder` and `-SettingsPath` in the scratchpad: `log.txt` gets one line, and the save folder holds a `.kopiaignore`. A change to the default folders or the move from old ones is run from a copy of the script and module in the scratchpad, with no folder parameters, laid out as the old version left it.
 5. **Restoring and opening** put windows on the maintainer's screen: they need the go-ahead, or the maintainer away. Then test only on folders made in the scratchpad, plan only into windows on those folders, and close every one of them after (trap 6). The tests take `Select-MissingFolders` out of a written restore file and run it, and check `New-OpenPlan`, which covers what would open where.

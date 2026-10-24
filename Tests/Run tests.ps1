@@ -172,7 +172,8 @@ try {
     $ini = Join-Path $tmp 'Settings.ini'
     Write-DefaultSettingsFile -Path $ini
     $r = Read-BackupSettings -Path $ini
-    Check 'settings: the default file reads back as the defaults' ($r.Problems.Count -eq 0 -and $r.KeepBackups -eq 20 -and
+    Check 'settings: the default file says KeepBackups = auto' ([IO.File]::ReadAllText($ini).Contains("`r`nKeepBackups = auto`r`n"))
+    Check 'settings: the default file reads back as the defaults' ($r.Problems.Count -eq 0 -and $r.KeepBackups -eq 0 -and
         $r.Warnings -eq $true -and $r.RestartMinFolders -eq 1 -and $r.DropWarnings -eq $true -and $r.DropMinFolders -eq 3 -and $r.DropMinPercent -eq 50)
     $lines = @('KeepBackups = 4 ; four', 'warnings=OFF', 'DropMinPercent = 101', 'DropMinFolders = abc', 'Bogus = 1', 'junk line', '# comment', '')
     [IO.File]::WriteAllText($ini, ($lines -join "`r`n"), $utf8)
@@ -185,7 +186,18 @@ try {
     [IO.File]::WriteAllText($ini, "KeepBackups = 7`r`n", (New-Object Text.UTF8Encoding $true))
     Check 'settings: a file saved with a BOM' ((Read-BackupSettings -Path $ini).KeepBackups -eq 7)
     $r = Read-BackupSettings -Path (Join-Path $tmp 'missing.ini')
-    Check 'settings: no file gives the defaults' ($r.KeepBackups -eq 20 -and $r.Problems.Count -eq 0)
+    Check 'settings: no file gives the defaults' ($r.KeepBackups -eq 0 -and $r.Problems.Count -eq 0)
+    [IO.File]::WriteAllText($ini, "KeepBackups = AUTO`r`n", $utf8)
+    $r = Read-BackupSettings -Path $ini
+    Check 'settings: KeepBackups auto in any case' ($r.KeepBackups -eq 0 -and $r.Problems.Count -eq 0)
+    [IO.File]::WriteAllText($ini, "KeepBackups = 0`r`n", $utf8)
+    $r = Read-BackupSettings -Path $ini
+    Check 'settings: KeepBackups 0 is out of range, not auto' ($r.Problems.Count -eq 1 -and $r.Problems[0].Contains('or auto'))
+    $counts = [ordered]@{ '0,10' = 288; '0,20' = 144; '0,30' = 96; '0,60' = 48; '0,120' = 24; '0,180' = 16; '0,240' = 12; '0,360' = 8;
+        '0,480' = 6; '0,720' = 4; '0,0' = 48; '0,7' = 412; '7,10' = 7; '7,720' = 7 }
+    $wrongCounts = @($counts.Keys | Where-Object { $k, $m = $_ -split ','; (Resolve-KeepCount -KeepBackups $k -IntervalMinutes $m) -ne $counts[$_] })
+    Check 'settings: auto keeps 48 hours at each interval; a number is kept as it is' ($wrongCounts.Count -eq 0)
+    if ($wrongCounts.Count) { Write-Host ("      wrong: {0}" -f ($wrongCounts -join ' | ')) }
     # --- The save folders ---------------------------------------------------
 
     $sv = Join-Path $tmp 'saves\Manual saves'
@@ -257,6 +269,8 @@ try {
         -not $w2.DropWarnings -and $w2.DropMinFolders -eq 5 -and $w2.DropMinPercent -eq 80)
     $w2text = [IO.File]::ReadAllText($ini2, [Text.Encoding]::UTF8)
     Check 'settings: the written file keeps its explanations, CRLF' ($w2text.Contains('; How many automatic backups to keep') -and $w2text.Contains("KeepBackups = 7`r`n"))
+    Write-BackupSettings -Path $ini2 -Values ([pscustomobject]@{ KeepBackups = 0; Warnings = $false; RestartMinFolders = 2; DropWarnings = $false; DropMinFolders = 5; DropMinPercent = 80 })
+    Check 'settings: auto is written as auto' ([IO.File]::ReadAllText($ini2).Contains("KeepBackups = auto`r`n") -and (Read-BackupSettings -Path $ini2).KeepBackups -eq 0)
     $threw = $false
     try { Write-BackupSettings -Path $ini2 -Values ([pscustomobject]@{ DropMinPercent = 101 }) } catch { $threw = $true }
     Check 'settings: a value out of range is refused, the file left alone' ($threw -and (Read-BackupSettings -Path $ini2).DropMinPercent -eq 80)
@@ -270,7 +284,22 @@ try {
         $act.Arguments -eq ('--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -Auto' -f $taskScript))
     Check 'task: the path reads back from the action' ((Get-TaskScriptPath $def) -eq $taskScript)
     $trg = @($def.Triggers)[0]
-    Check 'task: every 2 hours, all day' ($trg.Repetition.Interval -eq 'PT2H' -and $trg.Repetition.Duration -eq 'P1D')
+    Check 'task: every hour by default, all day' ($trg.Repetition.Interval -eq 'PT1H' -and $trg.Repetition.Duration -eq 'P1D' -and
+        (Get-TaskInterval $def) -eq 60)
+    $def6 = New-AutoBackupTask -ScriptPath $taskScript -Minutes 360
+    Check 'task: hours are written and read back' (@($def6.Triggers)[0].Repetition.Interval -eq 'PT6H' -and (Get-TaskInterval $def6) -eq 360)
+    $def20 = New-AutoBackupTask -ScriptPath $taskScript -Minutes 20
+    Check 'task: minutes are written and read back' (@($def20.Triggers)[0].Repetition.Interval -eq 'PT20M' -and (Get-TaskInterval $def20) -eq 20)
+    $threw = $false
+    try { [void](New-AutoBackupTask -ScriptPath $taskScript -Minutes 5) } catch { $threw = $true }
+    Check 'task: an interval not offered is refused' $threw
+    Check 'task: the description names the interval' ($def.Description.Contains('every hour') -and $def6.Description.Contains('every 6 hours') -and
+        $def20.Description.Contains('every 20 minutes'))
+    $typed = [ordered]@{ '10' = 10; '20' = 20; '30' = 30; '1' = 60; '2' = 120; '12' = 720; ' 30m ' = 30; '30 min' = 30; '60m' = 60; '2h' = 120;
+        '3 hours' = 180; '1 Hour' = 60; '5' = $null; '45' = $null; '24' = $null; '10h' = $null; '0' = $null; 'x' = $null; '' = $null; '1.5' = $null }
+    $wrong = @($typed.Keys | Where-Object { (ConvertFrom-IntervalText $_) -ne $typed[$_] })
+    Check 'task: typed intervals: bare 10/20/30 are minutes, other numbers hours, others refused' ($wrong.Count -eq 0)
+    if ($wrong.Count) { Write-Host ("      misread: '{0}'" -f ($wrong -join "', '")) }
     Check 'task: only while signed in, without administrator rights' ([string]$def.Principal.LogonType -eq 'Interactive' -and [string]$def.Principal.RunLevel -eq 'Limited')
     Check 'task: catches up, never runs twice at once, stopped after 15 minutes' ($def.Settings.StartWhenAvailable -and
         [string]$def.Settings.MultipleInstances -eq 'IgnoreNew' -and $def.Settings.ExecutionTimeLimit -eq 'PT15M')
@@ -438,6 +467,16 @@ try {
     [IO.File]::WriteAllText((Join-Path $auto 'state.json'), 'garbage', $utf8)
     $r = Invoke-Run 26 (G 'C:\26')
     Check 'runs: with state.json unreadable, nothing is deleted' ($r.Removed.Count -eq 0 -and (Get-Hours) -eq '26|20|18|14')
+    # KeepBackups = auto at a made-up interval of a day: 48 hours is 2,
+    # with 18, locked by the loss at 22, kept on top.
+    $autoKeep = New-Settings
+    $autoKeep.KeepBackups = 0
+    $names28 = @(, [string[]]@('C:\28'))
+    $r = Update-AutomaticBackups -Folder $auto -Groups (G 'C:\28') -Names $names28 -Complete $true -FrozenCount 0 -ScanError '' -Note '' `
+        -Now $base.AddHours(28) -Settings $autoKeep -IntervalMinutes 1440 -RestartInfoSince { param($Since) $script:FakeRestart } -NoWindow
+    $hours28 = Get-Hours
+    Check 'runs: KeepBackups auto keeps 48 hours at the given interval' ($hours28 -eq '28|26|18')
+    if ($hours28 -ne '28|26|18') { Write-Host ("      kept: {0}; removed: {1}; locked: {2}" -f $hours28, (@($r.Removed | ForEach-Object Why) -join ' | '), (@(Get-Incidents | ForEach-Object BaselineFile) -join ' | ')) }
     $logText = [IO.File]::ReadAllText((Join-Path $auto 'log.txt'), [Text.Encoding]::UTF8)
     Check 'runs: the log records losses, locks and deletions' ($logText.Contains('LOST FOLDERS') -and $logText.Contains('Lock released') -and
         $logText.Contains('(same folders as the new backup)') -and $logText.Contains('could not be read'))

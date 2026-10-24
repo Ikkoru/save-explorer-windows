@@ -1,16 +1,22 @@
 # Save Explorer Windows
 
-Saves the File Explorer windows and tabs you have open, so you can reopen them all after a restart, a crash or a mistake. It can do this by itself every two hours, warns you when folders seem to have been lost, and shows what changed so you can reopen just those.
+Saves the File Explorer windows and tabs you have open, so you can reopen them all after a restart, a crash or a mistake. It can do this by itself every hour, warns you when folders seem to have been lost, and shows what changed so you can reopen just those.
 
 For Windows 11 (version 22H2 or newer, which has tabs in File Explorer). Nothing to install: it uses Windows PowerShell, which comes with Windows.
 
 ## Getting it
 
 1. On this page, click **Code**, then **Download ZIP**.
-2. Unpack it into a folder you will keep, for example `Documents\Save Explorer Windows`. Not in Downloads: the automatic backups run the script from wherever it is, so it should stay put.
-3. Keep the files together: the scripts all need `Explorer Windows Shared.psm1` and `Settings.ini` beside them.
+2. Before unpacking, right-click the ZIP, choose **Properties**, tick **Unblock** at the bottom, and click **OK**. Otherwise Windows marks every file inside as from the internet, and PowerShell refuses to run them.
+3. Unpack it into a folder you will keep, for example `Documents\Save Explorer Windows`. Not in Downloads: the automatic backups run the script from wherever it is, so it should stay put.
+4. Keep the files together: the scripts all need `Explorer Windows Shared.psm1` and `Settings.ini` beside them.
+5. Allow PowerShell scripts for your account, once. Windows does not allow them at first, and **Run with PowerShell** then opens a window that closes at once, before you can read why. Open **Windows PowerShell** from the Start menu and run:
 
-If Windows refuses to run a file because it came from the internet: right-click it, choose **Properties**, tick **Unblock** at the bottom, and click **OK**.
+   ```powershell
+   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+   ```
+
+   This lets scripts on your own PC run, and downloaded ones once unblocked. It needs no administrator rights and changes nothing for other accounts. If you already unpacked without unblocking, right-click each `.ps1` file and unblock it the same way.
 
 ## Saving by hand
 
@@ -18,13 +24,13 @@ Right-click `Save Explorer Windows.ps1` and choose **Run with PowerShell**.
 
 It asks for a label. Type a few words to recognise the save by, or just press Enter. A moment later it says where it saved: a file named like `Restore Explorer Session 2026.10.16 14-30-00_my label.ps1` in `Saved sessions\Manual saves`. Saves made by hand are never deleted.
 
-## Automatic backups every two hours
+## Automatic backups
 
-Right-click `Set up automatic backups.ps1`, choose **Run with PowerShell**, and type **I** to install. It offers to make one backup straight away, so you can see that it works.
+Right-click `Set up automatic backups.ps1`, choose **Run with PowerShell**, and type **I** to install. It asks how often to save: press Enter for every hour, or type 10, 20 or 30 for minutes, or 2, 3, 4, 6, 8 or 12 for hours. It then offers to make one backup straight away, so you can see that it works.
 
-From then on Windows saves your open folders every two hours, at ten to every odd hour, into `Saved sessions\Automatic backups`. It only runs while you are signed in, and makes up for a backup it missed while the PC was off.
+From then on Windows saves your open folders on that schedule into `Saved sessions\Automatic backups`. The runs are counted from 00:50, so hourly runs fall at ten to every hour. It keeps enough backups to reach at least 48 hours back, however often it saves (`KeepBackups` in *Settings*). It only runs while you are signed in, and makes up for a backup it missed while the PC was off.
 
-To stop it, or after moving the folder, run `Set up automatic backups.ps1` again: **U** updates it to the new place, **R** removes it. Your backups stay either way.
+To stop it, or after moving the folder, run `Set up automatic backups.ps1` again: **U** updates it to the new place and lets you change how often it saves, **R** removes it. Your backups stay either way.
 
 Run the setup normally, not "as administrator". If you do want to set it up by hand in Task Scheduler instead, `DOC.md` lists the exact settings.
 
@@ -60,7 +66,7 @@ The left list then shows the last backup from before the loss, with the lost fol
 
 - **Nothing is saved when no folder is open.** Closing all your folders counts as on purpose: no warning, and folders you open later are not compared with the ones from before. Your last full backup is not deleted because of this.
 - **It waits after a restart.** For 5 minutes after you sign in, Windows is still reopening your folders, so a backup due in that time waits until they are back.
-- **Old backups are cleaned up.** A new backup with exactly the same folders replaces the older one. Of the rest, the newest 20 are kept. Saves made by hand are never cleaned up, and a backup kept for a "folders lost?" warning stays until you mark it as checked.
+- **Old backups are cleaned up.** A new backup with exactly the same folders replaces the older one. Of the rest, enough are kept to reach 48 hours back: 48 when it saves every hour, 144 every 20 minutes. Saves made by hand are never cleaned up, and a backup kept for a "folders lost?" warning stays until you mark it as checked.
 - **A frozen File Explorer window is skipped.** If a window stops responding, its tabs are left out after 2 seconds each, and the save lists what it could not read. If File Explorer is stuck entirely, nothing can be saved until it recovers. Don't end File Explorer in Task Manager to fix it: all your folder windows live in it and would close.
 - **Your saves list your folders.** Every file in `Saved sessions` names the folders you had open, so treat them as private. A `.kopiaignore` file in each keeps them out of Kopia backups. If you sync this folder with Syncthing, add `Saved sessions` to its ignore list. Other backup or sync tools need telling separately.
 - **Don't rename `Save Explorer Windows.ps1`.** The automatic backups look for it by name. If you move the folder, run the setup again.
@@ -73,7 +79,7 @@ Click **Settings...** in the compare window, or open `Settings.ini` in Notepad, 
 
 | Setting | Default | What it does |
 |---|---|---|
-| `KeepBackups` | 20 | How many automatic backups to keep |
+| `KeepBackups` | auto | How many automatic backups to keep: `auto` for 48 hours' worth at the chosen interval, or a number |
 | `Warnings` | on | `off` turns the "folders lost?" warning off completely |
 | `RestartMinFolders` | 1 | After a restart, sign-out or crash: how many folders must be missing for the warning |
 | `DropWarnings` | on | `off`: no warning when folders vanish without a restart |

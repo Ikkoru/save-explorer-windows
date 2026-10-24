@@ -15,11 +15,12 @@
 # the automatic backups until the task's action is updated. The version is
 # $ProgramVersion in the module, printed by a run by hand.
 #
-# With -Auto (Task Scheduler runs it every two hours) it asks nothing, saves
-# into "Saved sessions\Automatic backups", and then:
+# With -Auto (Task Scheduler runs it, every hour by default) it asks
+# nothing, saves into "Saved sessions\Automatic backups", and then:
 #   - deletes older automatic backups holding the same folders as the new one
 #     (which window a folder was a tab in does not count);
-#   - keeps only the newest few (KeepBackups in Settings.ini);
+#   - keeps only the newest few (KeepBackups in Settings.ini; auto keeps
+#     48 hours' worth at the task's interval);
 #   - checks for folders that closed without anyone closing them: lost to a
 #     PC restart, a sign-out or an Explorer crash, or many gone at once
 #     (thresholds in Settings.ini). The last backup from before such a loss
@@ -27,9 +28,11 @@
 # A scan that finds no folder open is never kept. log.txt beside the
 # automatic backups records every automatic run.
 #
-# First-time setup for running by hand (one of):
-#   1. In a PowerShell window, run:  Set-ExecutionPolicy RemoteSigned -CurrentUser
-#   2. Right-click this file and choose "Run with PowerShell" (may prompt)
+# First-time setup for running by hand: in a PowerShell window, run
+#   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+# Windows 11's "Run with PowerShell" runs powershell.exe -File with no
+# policy override, so until then the window closes at once on the
+# policy error, before anything here can catch it.
 #
 # Needs "Explorer Windows Shared.psm1" beside it; that file also describes
 # the target environment and how frozen windows are handled. This file stays
@@ -41,7 +44,9 @@ param(
     [string]$BackupFolder,    # automatic backups; default "Saved sessions\Automatic backups"
     [string]$ManualFolder,    # saves by hand; default "Saved sessions\Manual saves"
     [string]$SettingsPath,    # default Settings.ini beside this script
-    [switch]$NoWindow         # with -Auto: record a loss but open no window (tests)
+    [switch]$NoWindow,        # with -Auto: record a loss but open no window (tests)
+    [int]$IntervalMinutes     # with -Auto: the interval KeepBackups = auto counts
+                              # from; default the scheduled task's own
 )
 
 $ErrorActionPreference = 'Stop'
@@ -450,6 +455,9 @@ function Invoke-AutoSave {
         foreach ($problem in $settings.Problems) {
             Write-BackupLog $Folder ("Settings.ini {0} - using the default." -f $problem)
         }
+        # Read from the task rather than passed in its action, so an
+        # interval changed by hand in Task Scheduler still counts.
+        if ($IntervalMinutes -le 0) { $IntervalMinutes = Get-AutoBackupInterval }
 
         Wait-ExplorerSettled -Folder $Folder
 
@@ -464,7 +472,7 @@ function Invoke-AutoSave {
             $result = Update-AutomaticBackups -Folder $Folder `
                 -Groups (Get-ScanGroups $scan) -Names (Get-ScanGroups $scan -Names) `
                 -Complete (Test-ScanComplete $scan) -FrozenCount $scan.Frozen.Count -ScanError $scan.Error `
-                -Note (New-FrozenReport -Scan $scan) -Now ([DateTimeOffset]::Now) -Settings $settings `
+                -Note (New-FrozenReport -Scan $scan) -Now ([DateTimeOffset]::Now) -Settings $settings -IntervalMinutes $IntervalMinutes `
                 -RestartInfoSince { param($Since) Get-ExplorerRestartInfo -Since $Since } `
                 -NoWindow:$NoWindow -WindowOpen:(Test-NamedMutexHeld 'Local\SaveExplorerWindows.IncidentWindow')
         } finally {

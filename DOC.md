@@ -48,8 +48,8 @@ Running a restore script reopens its session with the original window/tab groupi
 
 `Set up automatic backups.ps1` registers it from `New-AutoBackupTask`, the one definition the tests check:
 
-- Name: `Save Explorer Windows every 2 hours`.
-- Trigger: daily at 00:50, repeating every 2 hours, so at ten to every odd hour. Runs only while the user is logged on, not elevated; a missed run starts as soon as possible; a run still going is not started twice; stopped after 15 minutes.
+- Name: `Save Explorer Windows`. `Get-AutoBackupTask` also finds one under a name an earlier setup used (`$LegacyTaskNames`), and the setup's U replaces it with the current name.
+- Trigger: daily at 00:50, repeating every hour by default, so at ten to every hour. The setup asks for the interval: 10, 20 or 30 minutes, or 1 to 12 hours where they divide a day (`$TaskIntervalMinutes`). `ConvertFrom-IntervalText` reads the answer, a bare 10, 20 or 30 as minutes and any other number as hours. On U the task's current interval is the default when it is still offered; `Get-TaskInterval` reads it back. Nothing under 10 minutes is offered: a run after a sign-in waits 5 minutes before scanning, and `KeepBackups = auto` would keep hundreds of files. Runs only while the user is logged on, not elevated; a missed run starts as soon as possible; a run still going is not started twice; stopped after 15 minutes.
 - Action: `conhost.exe --headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "<folder>\Save Explorer Windows.ps1" -Auto`. `conhost --headless` keeps a console window from flashing up.
 
 The action names the script file, so renaming or moving it stops the backups until the action is updated. Whether a run worked shows in `Saved sessions\Automatic backups\log.txt`, and the task's last run result in Task Scheduler.
@@ -130,20 +130,25 @@ All in the module, and all covered by `Tests\Run tests.ps1`.
 - **Same folders**: paths compared as a multiset, ignoring letter case and which window a tab was in. A folder open in two tabs counts twice.
 - **Cleanup after each automatic save**, deleting permanently:
   - older automatic backups holding the same folders as the new one, but only when the new scan is complete;
-  - of the rest, all but the newest `KeepBackups`. Locked backups are kept on top and not counted, and the newest complete backup and the new file are never deleted;
+  - of the rest, all but the newest `KeepBackups`. `auto`, the default (0 inside the module), is `Resolve-KeepCount`: enough for `$AutoKeepHours` at the task's interval, rounded up, the interval read from the registered task at each run (`Get-AutoBackupInterval`, hourly when there is none). Locked backups are kept on top and not counted, and the newest complete backup and the new file are never deleted;
   - nothing at all when `state.json` cannot be read; it is renamed `state (unreadable <time>).json`.
 - **Comparison point**: the newest complete automatic backup, or a later scan that found nothing open (`lastEmptyAt`).
-- **Was it the user?** A loss is taken as not the user's doing if, since the comparison point, the PC booted; the taskbar's explorer.exe (owner of `Shell_TrayWnd`) started, meaning a sign-out, a Fast Startup shutdown or an Explorer restart; or the Application log holds event 1000 or 1002 for explorer.exe. The folder windows' own process tells nothing: with "Launch folder windows in a separate process" on, it exits by itself once the last window closes.
+- **Was it the user?** A loss is taken as not the user's doing if, since the comparison point:
+  - the PC booted;
+  - the taskbar's explorer.exe (owner of `Shell_TrayWnd`) started, meaning a sign-out, a Fast Startup shutdown or an Explorer restart; or
+  - the Application log holds event 1000 or 1002 for explorer.exe.
+
+  The folder windows' own process tells nothing: with "Launch folder windows in a separate process" on, it exits by itself once the last window closes.
 - **When it warns** (`Settings.ini`):
   - `Warnings = off`: never, and no backup is ever locked (fully manual).
   - After a restart, sign-out or crash: when at least `RestartMinFolders` folders are missing.
   - Otherwise: `DropWarnings = on`, at least `DropMinFolders` missing, and those at least `DropMinPercent` percent of the folders before. Never when nothing is open now (below).
 - **An incomplete scan** is saved, but never judged, never replaces another backup and never becomes the comparison point.
-- **A loss (an "incident") locks the backup from before it.** The lock goes when the person answers that they closed the folders, when every missing folder is open again (as a multiset), or when the locked file is gone. A backup holds at most one lock.
+- **A loss (an "incident") locks the backup from before it.** The lock goes in any of three ways: the person clicks "Mark as checked" in the compare window, every missing folder is open again (as a multiset), or the locked file is gone. A backup holds at most one lock.
 
 ### Closing every folder never warns
 
-When a scan finds no folder open at all, and the PC, the sign-in and Explorer all stayed up since the last backup, the check takes it as the user closing everything on purpose: no warning, nothing saved, and "nothing open" becomes what the next scan is compared with, so folders opened later never count as lost. Without this, the big-drop warning would fire every time someone closed all their folders, and again when they next opened a couple, compared with the full set from before.
+A scan may find no folder open at all while the PC, the sign-in and Explorer all stayed up since the last backup. The check takes that as the user closing everything on purpose: no warning, and nothing saved. "Nothing open" then becomes what the next scan is compared with, so folders opened later never count as lost. Without this, the big-drop warning would fire every time someone closed all their folders, and again when they next opened a couple, compared with the full set from before.
 
 Losing everything to a restart, a sign-out or a crash that Windows recorded still warns. A crash Windows does not record, leaving nothing open, does not. Even then the last full backup is not deleted at once: it stays until `KeepBackups` newer, different backups have replaced it.
 
@@ -177,10 +182,12 @@ Every restore script and `state.json` lists open folders.
 
 ### Upgrading a PC that runs v6.0 or v6.1
 
-- The script is `Save Explorer Windows.ps1`. Replace the old script and the module, and point the scheduled task's action at the new name; from then on the name stays.
+- The script is `Save Explorer Windows.ps1`. Replace the old script and the module, and add `Compare Explorer Backups.ps1` and `Set up automatic backups.ps1`; without the compare script, a loss falls back to the message box. Then point the scheduled task's action at the new name, or run the setup and choose U. From then on the name stays.
 - The first automatic run moves `Automatic backups\` and `Manual saves\` from beside the script into `Saved sessions\` (`Move-LegacySaveFolders`), logging each move; until then, everything keeps using them where they are. A folder whose new place already exists is left alone. v6.0's saves by hand, which lay beside the script itself, stay where they are.
 - A device syncing the script's folder needs `/<path>/Saved sessions` in its `.stignore` before the upgrade, or the moved folders are synced. Its lines for the old folders can go once the move is logged.
-- The per-tab deadline is 2 s instead of 1 s, and `KeepBackups` defaults to 20 instead of 10. An existing `Settings.ini` keeps its own value until it is edited.
+- The per-tab deadline is 2 s instead of 1 s, and `KeepBackups` defaults to `auto` (48 hours' worth) instead of 10. An existing `Settings.ini` keeps its own value until it is edited.
+- The task runs every hour unless the setup is told otherwise, under the name `Save Explorer Windows`; the setup's U renames a task registered as `Save Explorer Windows every 2 hours` and offers its interval as the default.
+- On a PC that has never allowed scripts, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first, and unblock the ZIP before unpacking: Windows 11's **Run with PowerShell** runs `powershell.exe -File` with no policy override, so the window closes at once on the policy error, before the script can catch anything. The task itself passes `-ExecutionPolicy Bypass` and needs neither.
 
 ---
 
@@ -212,9 +219,9 @@ Restore files written before 7.0 always press Ctrl+T.
 
 `Compare Explorer Backups.ps1`, a WinForms window. Started by hand, or by `-ShowIncident` for a loss.
 
-**What it shows.** Each side has a drop-down of every readable save in both save folders, newest first (automatic or by hand, label, folder count; a locked one marked "kept after a loss", an incomplete one "incomplete"); the right side also offers "Open right now", a fresh `Invoke-ExplorerScan`. By default: for a loss, its locked backup against its current file (or "Open right now" when that file is gone); otherwise the second-newest automatic backup against the newest. The lists are `ListView`s grouped by window. `Get-CompareRows` marks a left row red when the right lacks it and a right row orange when the left lacks it, pairing as `Compare-SessionFolders` does.
+**What it shows.** Each side has a drop-down of every readable save in both save folders, newest first, showing whether it was automatic or by hand, its label and its folder count. A locked one is marked "kept after a loss", an incomplete one "incomplete". The right side also offers "Open right now", a fresh `Invoke-ExplorerScan`. By default: for a loss, its locked backup against its current file (or "Open right now" when that file is gone); otherwise the second-newest automatic backup against the newest. The lists are `ListView`s grouped by window. `Get-CompareRows` marks a left row red when the right lacks it and a right row orange when the left lacks it, pairing as `Compare-SessionFolders` does.
 
-**Opening.** "Open ticked" scans what is open now, builds a plan with `New-OpenPlan`, and hands it to `Invoke-OpenPlan` on a separate STA runspace, which a timer polls for progress; a frozen Explorer window can then hold up only the opening, never the window. The plan skips folders already open; any other folder goes in as a tab of the window holding most of its former tab-mates (open now, or opened earlier in the plan), else into a new window that its later tab-mates join. `Add-ShellTab` asks for tabs with `RequestNewTab` only; when a window does not answer, the folder opens in a new window instead and its later tab-mates follow it there. Nothing in the compare window presses keys.
+**Opening.** "Open ticked" scans what is open now, builds a plan with `New-OpenPlan`, and hands it to `Invoke-OpenPlan` on a separate STA runspace, which a timer polls for progress. A frozen Explorer window can then hold up only the opening, never the window. The plan skips folders already open. Any other folder goes in as a tab of the window holding most of its former tab-mates, open now or opened earlier in the plan; failing that, into a new window that its later tab-mates join. `Add-ShellTab` asks for tabs with `RequestNewTab` only; when a window does not answer, the folder opens in a new window instead and its later tab-mates follow it there. Nothing in the compare window presses keys.
 
 **Other buttons.** "Tick all missing" ticks every red row. "Mark as checked" calls `Remove-BackupIncident`. "Settings..." edits the six values of `Settings.ini` with controls bounded by their allowed ranges and writes it with `Write-BackupSettings`, which keeps the template's explanations but not a person's own comments.
 
@@ -244,12 +251,6 @@ The numbered traps in `CLAUDE.md` are the rest of this list; these are the ones 
 
 ---
 
-## Open questions for the maintainer
-
-Raise these with the maintainer when work next touches them; each is theirs to settle.
-
-- **Closing every folder never warns** (*Automatic backups: the rules*): are the specifics as wanted? That a scan finding nothing open, with no recorded restart, counts as deliberate and saves nothing; that a crash Windows does not record, leaving nothing open, gives no warning; and that the last full backup lasts until `KeepBackups` newer, different backups replace it. `KeepBackups` was raised from 10 to 20 in the meantime.
-
 ## Publishing
 
 `master` stays local: its history holds private details in old commits and in its authors' addresses. What is published is the `public` branch, whose commits each hold a whole tree of `master`, authored with the maintainer's GitHub no-reply address, one commit per release:
@@ -265,9 +266,19 @@ Raise these with the maintainer when work next touches them; each is theirs to s
 
 Before each: `git grep` over `master`'s tree for private data (machine paths, people's names, e-mail addresses, window titles or folder names from a real session; `CLAUDE.md` trap 16), and only `public` is pushed, never `master`.
 
+## Known limitations
+
+- **Tab restore needs Windows 11 22H2+.** On older builds each path opens as a separate window.
+- **An IME can still swallow the restore's fallback `Ctrl+T`**, used only when a window does not answer the tab request, and by restore files written before 7.0, which always press it.
+- **Restore opens windows, and each new window takes the keyboard.** Don't type during restore.
+- **Tab order within a window** follows COM enumeration order, which usually but not always matches visual left-to-right order.
+- **A frozen window's paths are reported, not recovered.** Its tabs are skipped after the per-tab deadline each and described from Win32 data (title, HWND, PID, placement, hung flag). A path only survives in the rare case where the tab answered `LocationURL` before blocking; the usual block point is `Windows().Item($i)`, which yields nothing. Windows 11 draws the address bar in XAML, so even `WM_GETTEXT` gives nothing back, and the title is all there is. Closing the hung window and re-running the save script captures everything else cleanly.
+- **Each frozen tab costs a scan the full per-tab deadline** (`$TabReadTimeoutMs` in the module), so a hung window costs that times its tab count.
+- **If the shell COM service itself is down (trap 12), nothing can be saved** — not one path, from any window. The run degrades to the Win32 window list and recovery advice. Waiting for the hung window to free itself is the only fix that keeps the session.
+
 ## Later
 
-1. **A UIA fallback for a dead COM service.** When the shell window service is unreachable (trap 12) nothing can be read, but windows that still answer messages would likely give up their active tab's path through UI Automation: a partial save instead of none. Per window, not per tab.
+1. **A UIA fallback for a dead COM service.** When the shell window service is unreachable (trap 12), nothing can be read. Windows that still answer messages would likely give up their active tab's path through UI Automation, though: a partial save instead of none. Per window, not per tab.
 2. **Restore tab order deterministically.** COM enumeration order usually matches visual order but is not guaranteed. Check whether `IShellBrowser` exposes a tab index.
 3. **Preserve window geometry.** Everything is maximized; `GetWindowRect` at save time and `SetWindowPos` at restore would keep other layouts.
 4. **Record the active tab.** Restore leaves the last-opened tab focused.

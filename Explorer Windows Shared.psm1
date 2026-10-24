@@ -1,6 +1,6 @@
 # Explorer Windows Shared.psm1
 #
-# Code shared by "Save Explorer Windows" (run by hand, or every two hours by
+# Code shared by "Save Explorer Windows" (run by hand, or on a schedule by
 # Task Scheduler) and the compare window: reading Explorer's windows, the
 # restore-file format, the settings file, the automatic backups' state, and
 # the rules for cleanup and for spotting folders that closed without anyone
@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '7.0'
+$script:ProgramVersion = '7.1'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 
@@ -978,8 +978,10 @@ function Get-SessionBackups {
 # Settings.ini
 # ---------------------------------------------------------------------------
 
+# KeepBackups 0 is "auto" in the file: enough backups for $AutoKeepHours
+# at the task's interval (Resolve-KeepCount).
 $script:SettingsDefaults = [ordered]@{
-    KeepBackups       = 20
+    KeepBackups       = 0
     Warnings          = $true
     RestartMinFolders = 1
     DropWarnings      = $true
@@ -1002,9 +1004,11 @@ $script:SettingsTemplate = @'
 ; backup uses it. A value that cannot be read counts as its default, and
 ; the log in "Automatic backups" says so.
 
-; How many automatic backups to keep. A backup locked after folders were
-; lost is kept on top of these.
-KeepBackups = 20
+; How many automatic backups to keep: auto for enough to reach 48 hours
+; back at the interval the setup chose (48 when it saves every hour, 144
+; every 20 minutes), or a number. A backup locked after folders were lost
+; is kept on top of these.
+KeepBackups = auto
 
 ; The lost-folder check: on, or off to be fully manual (no warnings, and no
 ; backup is ever locked).
@@ -1043,6 +1047,8 @@ function Write-BackupSettings {
         if ($null -eq $value) { $value = $script:SettingsDefaults[$key] }
         if ($script:SettingsDefaults[$key] -is [bool]) {
             $shown = if ([bool]$value) { 'on' } else { 'off' }
+        } elseif ($key -eq 'KeepBackups' -and [int]$value -eq 0) {
+            $shown = 'auto'
         } else {
             $range = $script:SettingsRanges[$key]
             $number = [int]$value
@@ -1085,13 +1091,16 @@ function Read-BackupSettings {
                 if ($raw -match '^(on|yes|true|1)$') { $values[$key] = $true }
                 elseif ($raw -match '^(off|no|false|0)$') { $values[$key] = $false }
                 else { $problems.Add(("line {0}: {1} must be on or off, not '{2}'" -f $lineNo, $key, $raw)) }
+            } elseif ($key -eq 'KeepBackups' -and $raw -match '^auto$') {
+                $values[$key] = 0
             } else {
                 $range = $script:SettingsRanges[$key]
                 $number = 0
                 if ([int]::TryParse($raw, [ref]$number) -and $number -ge $range[0] -and $number -le $range[1]) {
                     $values[$key] = $number
                 } else {
-                    $problems.Add(("line {0}: {1} must be a whole number from {2} to {3}, not '{4}'" -f $lineNo, $key, $range[0], $range[1], $raw))
+                    $orAuto = if ($key -eq 'KeepBackups') { ' or auto' } else { '' }
+                    $problems.Add(("line {0}: {1} must be a whole number from {2} to {3}{4}, not '{5}'" -f $lineNo, $key, $range[0], $range[1], $orAuto, $raw))
                 }
             }
         }
@@ -1398,6 +1407,7 @@ function Update-AutomaticBackups {
         [string]$Note,                     # frozen-tab report for the restore file
         [DateTimeOffset]$Now,
         $Settings,                         # Read-BackupSettings output
+        [int]$IntervalMinutes = 60,        # the task's, for KeepBackups = auto
         [scriptblock]$RestartInfoSince,    # { param($Since) ... } -> Get-ExplorerRestartInfo shape
         [switch]$NoWindow,                 # never ask for the window (tests)
         [switch]$WindowOpen                # the lost-folder window is already up
@@ -1488,7 +1498,7 @@ function Update-AutomaticBackups {
     if ($savedFile -and -not $state.Unreadable) {
         $locked = @($state.Incidents | ForEach-Object { $_.BaselineFile })
         $plan = @(Get-CleanupPlan -Backups @(Get-SessionBackups -Folder $Folder) -NewestFile $savedFile `
-            -LockedFiles $locked -Keep $Settings.KeepBackups)
+            -LockedFiles $locked -Keep (Resolve-KeepCount -KeepBackups $Settings.KeepBackups -IntervalMinutes $IntervalMinutes))
         foreach ($item in $plan) {
             try {
                 [IO.File]::Delete($item.Path)
@@ -1859,28 +1869,126 @@ function Invoke-OpenPlan {
 # rename stops the backups until the setup is run again.
 # ---------------------------------------------------------------------------
 
-$script:TaskName = 'Save Explorer Windows every 2 hours'
+$script:TaskName = 'Save Explorer Windows'
+# Names an earlier setup registered the task under. Get-AutoBackupTask
+# finds one, so the setup can replace it with the current name instead
+# of leaving a second task running beside the new one.
+$script:LegacyTaskNames = @('Save Explorer Windows every 2 hours')
+
+# The intervals the setup offers, in minutes: each divides a day, so the
+# runs fall at the same times every day. Nothing shorter than 10 minutes:
+# a run after a sign-in waits 5 minutes before it scans, and
+# KeepBackups = auto would keep hundreds of files (288 at 10 minutes).
+$script:TaskIntervalMinutes = @(10, 20, 30, 60, 120, 180, 240, 360, 480, 720)
+$script:DefaultTaskIntervalMinutes = 60
 
 function Get-AutoBackupTaskName { $script:TaskName }
+function Get-TaskIntervalChoices { $script:TaskIntervalMinutes }
+function Get-DefaultTaskInterval { $script:DefaultTaskIntervalMinutes }
+
+# How far back KeepBackups = auto reaches.
+$script:AutoKeepHours = 48
+
+function Get-AutoKeepHours { $script:AutoKeepHours }
+
+function Resolve-KeepCount {
+    # The number of backups cleanup keeps: KeepBackups itself, or for auto
+    # (0) enough to cover $AutoKeepHours at the given interval, rounded up.
+    # Backups holding the same folders replace each other, so a quiet
+    # period makes the kept ones reach further back still.
+    param([int]$KeepBackups, [int]$IntervalMinutes)
+    if ($KeepBackups -gt 0) { return $KeepBackups }
+    if ($IntervalMinutes -le 0) { $IntervalMinutes = $script:DefaultTaskIntervalMinutes }
+    [int][math]::Ceiling($script:AutoKeepHours * 60 / $IntervalMinutes)
+}
+
+function Format-KeepSpan {
+    # How far back $Count backups at $IntervalMinutes reach, at least.
+    param([int]$Count, [int]$IntervalMinutes)
+    $hours = $Count * $IntervalMinutes / 60
+    if ($hours -lt 1) { '{0} minutes' -f ($Count * $IntervalMinutes) }
+    elseif ($hours -eq [math]::Floor($hours)) { '{0} hours' -f $hours }
+    else { '{0:0.#} hours' -f $hours }
+}
+
+function Get-AutoBackupInterval {
+    # The registered task's interval in minutes, or the default when there
+    # is no task or its interval cannot be read.
+    $minutes = 0
+    try { $task = Get-AutoBackupTask; if ($task) { $minutes = Get-TaskInterval $task } } catch { }
+    if ($minutes -gt 0) { $minutes } else { $script:DefaultTaskIntervalMinutes }
+}
+
+function ConvertFrom-IntervalText {
+    # What a person typed at the setup's question, in minutes; $null when it
+    # is not one of the offered intervals. A bare 10, 20 or 30 is minutes,
+    # any other bare number hours, since the two lists share no number;
+    # "m"/"min"/"minutes" and "h"/"hour"/"hours" say which.
+    param([string]$Text)
+    $m = [regex]::Match($Text.Trim().ToLowerInvariant(), '^(\d{1,4})\s*(m|min|mins|minutes?|h|hours?)?$')
+    if (-not $m.Success) { return $null }
+    $n = [int]$m.Groups[1].Value
+    $unit = $m.Groups[2].Value
+    $minutes = if ($unit.StartsWith('m')) { $n }
+               elseif ($unit) { $n * 60 }
+               elseif ($n -lt 60 -and $script:TaskIntervalMinutes -contains $n) { $n }
+               else { $n * 60 }
+    if ($script:TaskIntervalMinutes -contains $minutes) { $minutes } else { $null }
+}
+
+function Get-AutoBackupTask {
+    # The registered task under its current name, else under a legacy one;
+    # $null when there is none.
+    foreach ($n in @($script:TaskName) + $script:LegacyTaskNames) {
+        $t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
+        if ($t) { return $t }
+    }
+    $null
+}
+
+function Format-TaskInterval {
+    param([int]$Minutes)
+    if ($Minutes -eq 60) { 'every hour' }
+    elseif ($Minutes -eq 1440) { 'once a day' }
+    elseif ($Minutes % 60 -eq 0) { 'every {0} hours' -f ($Minutes / 60) }
+    else { 'every {0} minutes' -f $Minutes }
+}
 
 function New-AutoBackupTask {
     # The task's definition, not registered. conhost --headless keeps a
-    # console window from flashing up every two hours. The arguments are one
+    # console window from flashing up at every run. The arguments are one
     # string, the path quoted, since paths here hold spaces and commas.
     # Interactive + Limited: runs only while the user is signed in, without
     # administrator rights - an elevated process sees no Explorer windows.
-    param([string]$ScriptPath)
+    param([string]$ScriptPath, [int]$Minutes = $script:DefaultTaskIntervalMinutes)
+    if ($script:TaskIntervalMinutes -notcontains $Minutes) {
+        throw ("An interval of {0} minutes is not one of: {1}" -f $Minutes, ($script:TaskIntervalMinutes -join ', '))
+    }
     $folder = Split-Path -Parent $ScriptPath
     $action = New-ScheduledTaskAction -Execute 'conhost.exe' -WorkingDirectory $folder `
         -Argument ('--headless powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -Auto' -f $ScriptPath)
-    # Daily from ten to one, repeating every two hours for the day.
+    # Daily from ten to one, repeating every $Minutes for the day.
     $trigger = New-ScheduledTaskTrigger -Daily -At '00:50'
-    $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At '00:50' -RepetitionInterval (New-TimeSpan -Hours 2) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+    $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At '00:50' -RepetitionInterval (New-TimeSpan -Minutes $Minutes) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
         -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
-        -Description ('Saves the open Explorer windows every 2 hours into "Saved sessions\Automatic backups" beside {0}, removes old backups and warns about lost folders.' -f (Split-Path -Leaf $ScriptPath))
+        -Description ('Saves the open Explorer windows {0} into "Saved sessions\Automatic backups" beside {1}, removes old backups and warns about lost folders.' -f (Format-TaskInterval $Minutes), (Split-Path -Leaf $ScriptPath))
+}
+
+function Get-TaskInterval {
+    # An existing task's interval in minutes, from its first trigger's
+    # repetition (ISO 8601, "PT20M", "PT2H"); none means once a day, 1440.
+    # 0 when it holds no whole number of minutes. The setup offers the
+    # value back only when it is one of its choices.
+    param($Task)
+    $trigger = @($Task.Triggers)[0]
+    if (-not $trigger) { return 0 }
+    $interval = [string]$trigger.Repetition.Interval
+    if (-not $interval) { return 1440 }
+    try { $span = [Xml.XmlConvert]::ToTimeSpan($interval) } catch { return 0 }
+    if ($span.TotalMinutes -ge 1 -and $span.TotalMinutes -eq [math]::Floor($span.TotalMinutes)) { [int]$span.TotalMinutes } else { 0 }
 }
 
 function Get-TaskScriptPath {
