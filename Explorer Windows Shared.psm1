@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '7.1'
+$script:ProgramVersion = '7.2'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 

@@ -45,10 +45,13 @@ Right-click a `Restore Explorer Session ... .ps1` file and choose **Run with Pow
 
 ## The compare window
 
-Right-click `Compare Explorer Backups.ps1` and choose **Run with PowerShell**. It shows two lists side by side, each one a saved session, or what is open right now. Pick them in the boxes above the lists.
+Right-click `Compare Explorer Backups.ps1` and choose **Run with PowerShell**. It shows two lists side by side, each one a saved session, or what is open right now. Pick them in the boxes above the lists: they hold every save, automatic and made by hand, newest first.
 
 - Folders are grouped by the window they were in.
 - **Red** on the left: in the left session but not the right. **Orange** on the right: in the right session but not the left. So with an older backup on the left and a newer one on the right, red is what got lost and orange is what is new.
+- **Only windows with red or orange** hides the windows where nothing changed. A window with a change still shows all its tabs.
+- **Show full paths** shows each folder's whole path, its own name included, instead of only the folder it is in.
+- Both boxes stay as you left them the next time the window opens.
 - Tick folders in either list and click **Open ticked**. Each one opens as a tab beside the tabs it used to be with, if any of those are open now; otherwise in a new window, which the rest of its old tabs then join. Folders already open are skipped.
 - **Tick all missing** ticks every red folder.
 - **Settings...** changes when the "folders lost?" warning appears, and how many backups are kept.

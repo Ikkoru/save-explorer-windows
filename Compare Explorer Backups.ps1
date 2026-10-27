@@ -45,6 +45,11 @@ $defaults = Get-DefaultPaths
 if (-not $BackupFolder) { $BackupFolder = Resolve-SaveFolder $defaults.AutoFolder (Join-Path $defaults.Folder 'Automatic backups') }
 if (-not $ManualFolder) { $ManualFolder = Resolve-SaveFolder $defaults.ManualFolder (Join-Path $defaults.Folder 'Manual saves') }
 if (-not $SettingsPath) { $SettingsPath = $defaults.Settings }
+# The window's own checkboxes are remembered beside the saves, so a run
+# pointed elsewhere (tests) keeps its own; nothing is remembered until
+# "Saved sessions" exists.
+$OptionsPath = if ($PSBoundParameters.ContainsKey('BackupFolder')) { Join-Path (Split-Path -Parent $BackupFolder) 'compare window.json' }
+               else { Join-Path $defaults.SavesFolder 'compare window.json' }
 
 # Started with "Run with PowerShell", a console window sits behind this one
 # doing nothing; hide it. Errors still reach the person, as message boxes.
@@ -98,6 +103,28 @@ function Get-SourceSession {
         return [pscustomobject]@{ Groups = (Get-ScanGroups $script:Now); Names = (Get-ScanGroups $script:Now -Names) }
     }
     [pscustomobject]@{ Groups = $Source.Backup.Groups; Names = $Source.Backup.Names }
+}
+
+function Read-WindowOptions {
+    # The checkboxes as last left; both off when nothing was remembered or
+    # the file cannot be read.
+    $o = [pscustomobject]@{ changedOnly = $false; fullPaths = $false }
+    try {
+        if ([IO.File]::Exists($OptionsPath)) {
+            $saved = [IO.File]::ReadAllText($OptionsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $o.changedOnly = [bool]$saved.changedOnly
+            $o.fullPaths = [bool]$saved.fullPaths
+        }
+    } catch { }
+    $o
+}
+
+function Save-WindowOptions {
+    try {
+        if (-not [IO.Directory]::Exists((Split-Path -Parent $OptionsPath))) { return }
+        $json = [pscustomobject]@{ changedOnly = $chkChanged.Checked; fullPaths = $chkFullPaths.Checked } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText($OptionsPath, $json, (New-Object Text.UTF8Encoding $false))
+    } catch { }
 }
 
 function Update-NowScan {
@@ -207,6 +234,17 @@ foreach ($part in @(@('Red:', $red), @(' on the left but not on the right.   ', 
     if ($part[1]) { $l.ForeColor = $part[1]; $l.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
     $legend.Controls.Add($l)
 }
+function New-Option {
+    param([string]$Text)
+    $c = New-Object System.Windows.Forms.CheckBox
+    $c.AutoSize = $true
+    $c.Text = $Text
+    $c.Margin = New-Object System.Windows.Forms.Padding(28, 0, 0, 0)
+    $legend.Controls.Add($c)
+    $c
+}
+$chkChanged   = New-Option 'Only windows with red or orange'
+$chkFullPaths = New-Option 'Show full paths'
 
 $status = New-Object System.Windows.Forms.StatusStrip
 $statusText = New-Object System.Windows.Forms.ToolStripStatusLabel
@@ -276,21 +314,30 @@ function Update-Sources {
 }
 
 function Fill-List {
-    param($List, $Rows, $Groups)
+    # With -ChangedOnly, a window none of whose folders is red or orange is
+    # left out whole; a window that has one keeps all its tabs, so the
+    # tab-mates a folder goes back beside stay in sight. Windows keep their
+    # numbers either way.
+    param($List, $Rows, $Groups, [switch]$ChangedOnly, [switch]$FullPaths)
     $List.BeginUpdate()
     $List.Items.Clear()
     $List.Groups.Clear()
+    $List.Columns[1].Text = if ($FullPaths) { 'Full path' } else { 'In' }
+    $changed = @{}
+    foreach ($r in @($Rows)) { if ($r.Status -eq 'missing' -or $r.Status -eq 'added') { $changed[$r.Window] = $true } }
     $byWindow = @{}
     $count = @($Groups).Count
     for ($w = 0; $w -lt $count; $w++) {
+        if ($ChangedOnly -and -not $changed[$w]) { continue }
         $tabs = @(@($Groups)[$w]).Count
         $g = New-Object System.Windows.Forms.ListViewGroup(('Window {0}  -  {1} tab(s)' -f ($w + 1), $tabs))
         [void]$List.Groups.Add($g)
         $byWindow[$w] = $g
     }
     foreach ($r in @($Rows)) {
+        if (-not $byWindow.ContainsKey($r.Window)) { continue }
         $item = New-Object System.Windows.Forms.ListViewItem($r.Name)
-        [void]$item.SubItems.Add((Get-ParentText $r.Path))
+        [void]$item.SubItems.Add($(if ($FullPaths) { $r.Path } else { Get-ParentText $r.Path }))
         $item.Group = $byWindow[$r.Window]
         $item.ToolTipText = $r.Path
         $item.Tag = [pscustomobject]@{ Row = $r; Group = [string[]]@(@($Groups)[$r.Window]) }
@@ -307,8 +354,9 @@ function Update-Lists {
     $a = Get-SourceSession $ls
     $b = Get-SourceSession $rs
     $rows = Get-CompareRows -Before $a.Groups -After $b.Groups -BeforeNames $a.Names -AfterNames $b.Names
-    Fill-List -List $left.List -Rows $rows.Before -Groups $a.Groups
-    Fill-List -List $right.List -Rows $rows.After -Groups $b.Groups
+    $view = @{ ChangedOnly = $chkChanged.Checked; FullPaths = $chkFullPaths.Checked }
+    Fill-List -List $left.List -Rows $rows.Before -Groups $a.Groups @view
+    Fill-List -List $right.List -Rows $rows.After -Groups $b.Groups @view
     $missing = @($rows.Before | Where-Object { $_.Status -eq 'missing' }).Count
     $added   = @($rows.After | Where-Object { $_.Status -eq 'added' }).Count
     $note = ''
@@ -511,6 +559,25 @@ $changed = { if (-not $script:Filling) { Update-Lists } }
 $left.Combo.Add_SelectedIndexChanged($changed)
 $right.Combo.Add_SelectedIndexChanged($changed)
 
+# A checkbox only changes the view, so ticked folders stay ticked: those
+# still shown are ticked again after the lists are refilled.
+$viewChanged = {
+    if ($script:Filling) { return }
+    Save-WindowOptions
+    $ticked = @{}
+    foreach ($side in $left, $right) {
+        $ticked[$side] = @($side.List.CheckedItems | ForEach-Object { '{0}|{1}' -f $_.Tag.Row.Window, $_.Tag.Row.Path })
+    }
+    Update-Lists
+    foreach ($side in $left, $right) {
+        foreach ($item in $side.List.Items) {
+            if ($ticked[$side] -contains ('{0}|{1}' -f $item.Tag.Row.Window, $item.Tag.Row.Path)) { $item.Checked = $true }
+        }
+    }
+}
+$chkChanged.Add_CheckedChanged($viewChanged)
+$chkFullPaths.Add_CheckedChanged($viewChanged)
+
 $btnMissing.Add_Click({
     foreach ($item in $left.List.Items) { if ($item.Tag.Row.Status -eq 'missing') { $item.Checked = $true } }
 })
@@ -550,6 +617,11 @@ $form.Add_Deactivate({ if ($script:WasActive) { $form.TopMost = $false } })
 # ---------------------------------------------------------------------------
 
 try {
+    $options = Read-WindowOptions
+    $script:Filling = $true
+    $chkChanged.Checked = $options.changedOnly
+    $chkFullPaths.Checked = $options.fullPaths
+    $script:Filling = $false
     $script:State = Read-BackupState -Folder $BackupFolder
     $pending = @($script:State.Incidents | Sort-Object -Property { $_.DetectedAt } -Descending)
     if ($IncidentId) { $pending = @($pending | Where-Object { $_.Id -eq $IncidentId }) }
