@@ -15,6 +15,7 @@ How the program is put together and what it does at runtime. `CLAUDE.md` holds t
 | `Settings.ini` | The automatic backups' settings, each explained in the file. Rewritten with the defaults when missing; an unreadable value counts as its default and is logged |
 | `Tests\Run tests.ps1` | The module's checks. Needs no open Explorer window, and never registers a task |
 | `README.md` | For people using it: how to save, set up the task and restore, and what to expect, in plain words |
+| `.github/FUNDING.yml` | The repository's Sponsor button on GitHub, pointing at the maintainer's Ko-fi page; the README's *Support* section says the same |
 
 Every save goes under one folder beside the script, `Saved sessions\`:
 

@@ -96,3 +96,9 @@ Run `Set up automatic backups.ps1` and type **R**, then delete the folder.
 ## For the curious
 
 `DOC.md` explains how it works inside. `Tests\Run tests.ps1` checks the rules for cleanup, the "folders lost?" warning and where reopened folders go, without touching your windows.
+
+## Support
+
+This is free and stays free. If it saved you time and you'd like to say thanks, a tip is welcome but never expected:
+
+- [Ko-fi](https://ko-fi.com/eepycoding)
