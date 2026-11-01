@@ -7,9 +7,13 @@ For Windows 11 (version 22H2 or newer, which has tabs in File Explorer). Nothing
 ## Getting it
 
 1. On this page, click **Code**, then **Download ZIP**.
+
 2. Before unpacking, right-click the ZIP, choose **Properties**, tick **Unblock** at the bottom, and click **OK**. Otherwise Windows marks every file inside as from the internet, and PowerShell refuses to run them.
+
 3. Unpack it into a folder you will keep, for example `Documents\Save Explorer Windows`. Not in Downloads: the automatic backups run the script from wherever it is, so it should stay put.
+
 4. Keep the files together: the scripts all need `Explorer Windows Shared.psm1` and `Settings.ini` beside them.
+
 5. Allow PowerShell scripts for your account, once. Windows does not allow them at first, and **Run with PowerShell** then opens a window that closes at once, before you can read why. Open **Windows PowerShell** from the Start menu and run:
 
    ```powershell
@@ -80,14 +84,14 @@ The left list then shows the last backup from before the loss, with the lost fol
 
 Click **Settings...** in the compare window, or open `Settings.ini` in Notepad, change a value after the `=` sign, and save. The next automatic backup uses it.
 
-| Setting | Default | What it does |
-|---|---|---|
-| `KeepBackups` | auto | How many automatic backups to keep: `auto` for 48 hours' worth at the chosen interval, or a number |
-| `Warnings` | on | `off` turns the "folders lost?" warning off completely |
-| `RestartMinFolders` | 1 | After a restart, sign-out or crash: how many folders must be missing for the warning |
-| `DropWarnings` | on | `off`: no warning when folders vanish without a restart |
-| `DropMinFolders` | 3 | ...how many folders must vanish at once |
-| `DropMinPercent` | 50 | ...and what share of the open folders that must be |
+| Setting             | Default | What it does                                                                                       |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `KeepBackups`       | auto    | How many automatic backups to keep: `auto` for 48 hours' worth at the chosen interval, or a number |
+| `Warnings`          | on      | `off` turns the "folders lost?" warning off completely                                             |
+| `RestartMinFolders` | 1       | After a restart, sign-out or crash: how many folders must be missing for the warning               |
+| `DropWarnings`      | on      | `off`: no warning when folders vanish without a restart                                            |
+| `DropMinFolders`    | 3       | ...how many folders must vanish at once                                                            |
+| `DropMinPercent`    | 50      | ...and what share of the open folders that must be                                                 |
 
 ## Removing it
 
@@ -103,4 +107,4 @@ This is free and stays free. If it saved you time and you'd like to say thanks, 
 
 <a href="https://ko-fi.com/eepycoding"><img src=".github/support_me_on_kofi_blue.webp" alt="Support me on Ko-fi" width="245"></a>
 
-- [GitHub Sponsors](https://github.com/sponsors/Ikkoru)
+- or on [GitHub Sponsors](https://github.com/sponsors/Ikkoru)
