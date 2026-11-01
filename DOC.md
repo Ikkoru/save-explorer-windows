@@ -15,7 +15,8 @@ How the program is put together and what it does at runtime. `CLAUDE.md` holds t
 | `Settings.ini` | The automatic backups' settings, each explained in the file. Rewritten with the defaults when missing; an unreadable value counts as its default and is logged |
 | `Tests\Run tests.ps1` | The module's checks. Needs no open Explorer window, and never registers a task |
 | `README.md` | For people using it: how to save, set up the task and restore, and what to expect, in plain words |
-| `.github/FUNDING.yml` | The repository's Sponsor button on GitHub, pointing at the maintainer's Ko-fi page; the README's *Support* section links there with the button `.github/support_me_on_kofi_blue.webp` |
+| `.githooks/pre-push` | Refuses a push that would publish the archived private history or a private address (*Publishing*) |
+| `.github/FUNDING.yml` | The repository's Sponsor button on GitHub, pointing at the maintainer's GitHub Sponsors and Ko-fi pages; the README's *Support* section links there with the button `.github/support_me_on_kofi_blue.webp` |
 
 Every save goes under one folder beside the script, `Saved sessions\`:
 
@@ -181,14 +182,15 @@ Every restore script and `state.json` lists open folders.
 - **Syncthing** reads neither file. On each device that syncs the folder holding the script, its `.stignore` (at the synced folder's root) needs `Saved sessions` by its path from that root: `/<path>/Saved sessions`. On a receiving device the same line stops copies arriving; ones that arrived before stay until removed by hand.
 - **git**: `.gitignore` covers `Saved sessions` and any restore script.
 
-### Upgrading a PC that runs v6.0 or v6.1
+### Upgrading from an earlier version
 
-- The script is `Save Explorer Windows.ps1`. Replace the old script and the module, and add `Compare Explorer Backups.ps1` and `Set up automatic backups.ps1`; without the compare script, a loss falls back to the message box. Then point the scheduled task's action at the new name, or run the setup and choose U. From then on the name stays.
-- The first automatic run moves `Automatic backups\` and `Manual saves\` from beside the script into `Saved sessions\` (`Move-LegacySaveFolders`), logging each move; until then, everything keeps using them where they are. A folder whose new place already exists is left alone. v6.0's saves by hand, which lay beside the script itself, stay where they are.
-- A device syncing the script's folder needs `/<path>/Saved sessions` in its `.stignore` before the upgrade, or the moved folders are synced. Its lines for the old folders can go once the move is logged.
-- The per-tab deadline is 2 s instead of 1 s, and `KeepBackups` defaults to `auto` (48 hours' worth) instead of 10. An existing `Settings.ini` keeps its own value until it is edited.
-- The task runs every hour unless the setup is told otherwise, under the name `Save Explorer Windows`; the setup's U renames a task registered as `Save Explorer Windows every 2 hours` and offers its interval as the default.
-- On a PC that has never allowed scripts, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first, and unblock the ZIP before unpacking: Windows 11's **Run with PowerShell** runs `powershell.exe -File` with no policy override, so the window closes at once on the policy error, before the script can catch anything. The task itself passes `-ExecutionPolicy Bypass` and needs neither.
+- From 6.0 or 6.1: the script is `Save Explorer Windows.ps1`. Replace the old script and the module, and add `Compare Explorer Backups.ps1` and `Set up automatic backups.ps1`; without the compare script, a loss falls back to the message box. Then point the scheduled task's action at the new name, or run the setup and choose U. From then on the name stays.
+- From 6.0 or 6.1: the first automatic run moves `Automatic backups\` and `Manual saves\` from beside the script into `Saved sessions\` (`Move-LegacySaveFolders`), logging each move; until then, everything keeps using them where they are. A folder whose new place already exists is left alone. v6.0's saves by hand, which lay beside the script itself, stay where they are.
+- From 6.0 or 6.1: a device syncing the script's folder needs `/<path>/Saved sessions` in its `.stignore` before the upgrade, or the moved folders are synced. Its lines for the old folders can go once the move is logged.
+- From 6.0 or 6.1: the per-tab deadline is 2 s instead of 1 s.
+- From before 7.1: `KeepBackups` defaults to `auto` (48 hours' worth) instead of 10, or 20 in 7.0. An existing `Settings.ini` keeps its own value until it is edited.
+- From before 7.1: the task runs every hour unless the setup is told otherwise, under the name `Save Explorer Windows`; the setup's U renames a task registered as `Save Explorer Windows every 2 hours` and offers its interval as the default.
+- From before 7.1: on a PC that has never allowed scripts, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first, and unblock the ZIP before unpacking. Windows 11's **Run with PowerShell** runs `powershell.exe -File` with no policy override, so the window closes at once on the policy error, before the script can catch anything. The task itself passes `-ExecutionPolicy Bypass` and needs neither.
 
 ---
 
@@ -222,7 +224,7 @@ Restore files written before 7.0 always press Ctrl+T.
 
 **What it shows.** Each side has a drop-down of every readable save in both save folders, newest first, showing whether it was automatic or by hand, its label and its folder count. A locked one is marked "kept after a loss", an incomplete one "incomplete". The right side also offers "Open right now", a fresh `Invoke-ExplorerScan`. By default: for a loss, its locked backup against its current file (or "Open right now" when that file is gone); otherwise the second-newest automatic backup against the newest. The lists are `ListView`s grouped by window. `Get-CompareRows` marks a left row red when the right lacks it and a right row orange when the left lacks it, pairing as `Compare-SessionFolders` does.
 
-**View checkboxes**, beside the legend. "Only windows with red or orange" leaves out each window none of whose rows is marked, and keeps every tab of a window that has one, so the tab-mates a folder goes back beside stay in sight; windows keep their numbers. "Show full paths" turns the "In" column into "Full path", the folder's own name included. Toggling either refills both lists and ticks again the rows still shown. Both are remembered in `compare window.json` beside the save folders (`Saved sessions\`, or the parent of `-BackupFolder`), written on each toggle, and nothing is remembered while that folder does not exist.
+**View checkboxes**, beside the legend. "Only windows with red or orange" leaves out each window none of whose rows is marked. It keeps every tab of a window that has one, so the tab-mates a folder goes back beside stay in sight, and windows keep their numbers. "Show full paths" turns the "In" column into "Full path", the folder's own name included. Toggling either refills both lists and ticks again the rows still shown. Both are remembered in `compare window.json` beside the save folders (`Saved sessions\`, or the parent of `-BackupFolder`), written on each toggle, and nothing is remembered while that folder does not exist.
 
 **Opening.** "Open ticked" scans what is open now, builds a plan with `New-OpenPlan`, and hands it to `Invoke-OpenPlan` on a separate STA runspace, which a timer polls for progress. A frozen Explorer window can then hold up only the opening, never the window. The plan skips folders already open. Any other folder goes in as a tab of the window holding most of its former tab-mates, open now or opened earlier in the plan; failing that, into a new window that its later tab-mates join. `Add-ShellTab` asks for tabs with `RequestNewTab` only; when a window does not answer, the folder opens in a new window instead and its later tab-mates follow it there. Nothing in the compare window presses keys.
 
@@ -256,18 +258,13 @@ The numbered traps in `CLAUDE.md` are the rest of this list; these are the ones 
 
 ## Publishing
 
-`master` stays local: its history holds private details in old commits and in its authors' addresses. What is published is the `public` branch, whose commits each hold a whole tree of `master`, authored with the maintainer's GitHub no-reply address, one commit per release:
+`master` is the published history: it tracks GitHub's `main`, and publishing is an ordinary push of `master`, from GitHub Desktop or `git push`. An edit made in GitHub's web editor comes back with an ordinary pull. Every commit is therefore public, its message and author included. A message says what changed and why without naming people, machine paths, or folders and windows from a real session (`CLAUDE.md` traps 16 and 18). The author is the maintainer's GitHub no-reply address, `58905922+Ikkoru@users.noreply.github.com`, which the global git config sets.
 
-```bash
-(
-  export GIT_AUTHOR_NAME=Ikkoru GIT_COMMITTER_NAME=Ikkoru
-  export GIT_AUTHOR_EMAIL=58905922+Ikkoru@users.noreply.github.com
-  export GIT_COMMITTER_EMAIL=58905922+Ikkoru@users.noreply.github.com
-  git branch -f public "$(git commit-tree 'master^{tree}' -p public -m 'Save Explorer Windows <version>')"
-)
-```
+The history from before this holds private details in old commits and in its authors' addresses. It is kept on this PC only, under `refs/archive/master-private`; a push sends branches, never `refs/archive/`, and the hook below refuses one that would carry any of it.
 
-Before each: `git grep` over `master`'s tree for private data (machine paths, people's names, e-mail addresses, window titles or folder names from a real session; `CLAUDE.md` trap 16), and only `public` is pushed, never `master`.
+**The pre-push hook**, `.githooks/pre-push`, runs once `git config core.hooksPath .githooks` is set, once per clone. For each commit a push would add to GitHub, it refuses the push when the commit is in the archived history, or when its author or committer address is not a GitHub no-reply one. It also refuses pushing anything but `main`. GitHub Desktop runs it too and shows its message.
+
+Before a push: `git grep` over the tree for private data (machine paths, people's names, e-mail addresses, window titles or folder names from a real session; `CLAUDE.md` trap 16), and a look at the messages of the commits about to go out.
 
 ## Known limitations
 

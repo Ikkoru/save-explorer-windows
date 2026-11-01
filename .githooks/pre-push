@@ -1,0 +1,37 @@
+#!/bin/sh
+# Refuses a push that would put private history or a private address on
+# GitHub. Every commit on master is published (DOC.md, Publishing); the
+# history from before that is kept under refs/archive/master-private and
+# must never leave this PC. Enabled once per clone with
+#   git config core.hooksPath .githooks
+# GitHub Desktop runs it too and shows its message.
+
+remote="$1"
+archive=refs/archive/master-private
+zero=0000000000000000000000000000000000000000
+status=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue
+    if [ "$remote_ref" != refs/heads/main ]; then
+        echo "pre-push: only master is pushed, to main; refused $local_ref -> $remote_ref" >&2
+        status=1
+        continue
+    fi
+    for c in $(git rev-list "$local_sha" --not --remotes="$remote"); do
+        if git rev-parse -q --verify "$archive" >/dev/null &&
+           git merge-base --is-ancestor "$c" "$archive"; then
+            echo "pre-push: $c is in the private history ($archive); push refused" >&2
+            status=1
+            break
+        fi
+        for e in $(git log -1 --format='%ae %ce' "$c"); do
+            case "$e" in
+                *@users.noreply.github.com|noreply@github.com) ;;
+                *) echo "pre-push: $c carries the address $e, not a GitHub no-reply one; push refused" >&2
+                   status=1 ;;
+            esac
+        done
+    done
+done
+exit $status
