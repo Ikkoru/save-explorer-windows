@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '7.2'
+$script:ProgramVersion = '7.3'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 
@@ -710,12 +710,100 @@ function Wait-For {
     $null
 }
 
+function Read-WindowTabs {
+    # This window's tabs, each with its COM identity and the folder it
+    # shows ('' when it shows none), from one pass over Shell.Windows().
+    param([int64]$Hwnd)
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($w in @($shellCom.Windows())) {
+        try {
+            if ([int64]$w.HWND -ne $Hwnd) { continue }
+            $p = ''
+            try { $p = [string]$w.Document.Folder.Self.Path } catch { }
+            $list.Add([pscustomobject]@{ Tab = $w; Id = (Get-ComId $w); Path = $p })
+        } catch { }
+    }
+    , $list.ToArray()
+}
+
+function Read-SettledTabs {
+    # Read-WindowTabs until two passes agree. Shell.Windows() is read by
+    # index, so a tab that comes or goes during a pass shifts the others
+    # and one can be missed; a missed tab would later look new.
+    param([int64]$Hwnd)
+    $last = Read-WindowTabs $Hwnd
+    for ($i = 0; $i -lt 10; $i++) {
+        Start-Sleep -Milliseconds 50
+        $next = Read-WindowTabs $Hwnd
+        if (((@($next | ForEach-Object { $_.Id }) | Sort-Object) -join ',') -eq ((@($last | ForEach-Object { $_.Id }) | Sort-Object) -join ',')) { return , $next }
+        $last = $next
+    }
+    , $last
+}
+
+function Select-NewTab {
+    # The tab a new-tab request made, from the window's tabs read after it:
+    # $null until the window holds $Need tabs. A tab whose COM identity was
+    # there before is not it, and neither is one showing a folder already
+    # placed in this window, whatever its identity says: taking that one
+    # would navigate a restored folder away and leave the real new tab on
+    # This PC. Folders count as a multiset, so a new tab that opens on a
+    # placed folder (a new-tab page set to Downloads) still qualifies when
+    # more tabs show it than were placed. A tab showing no folder, or a
+    # shell location, is the likeliest new one. The compare window's module
+    # holds the same function; the tests check the two stay identical.
+    param([object[]]$Tabs, [long[]]$BeforeIds, [string[]]$Placed, [int]$Need)
+    if (@($Tabs).Count -lt $Need) { return $null }
+    $ignoreCase = [StringComparer]::OrdinalIgnoreCase
+    $before = New-Object 'System.Collections.Generic.HashSet[long]'
+    foreach ($id in @($BeforeIds)) { [void]$before.Add($id) }
+    $placedCount = New-Object 'System.Collections.Generic.Dictionary[string,int]' $ignoreCase
+    foreach ($p in @($Placed)) { if ($p) { $n = 0; [void]$placedCount.TryGetValue($p, [ref]$n); $placedCount[$p] = $n + 1 } }
+    $showing = New-Object 'System.Collections.Generic.Dictionary[string,int]' $ignoreCase
+    foreach ($t in @($Tabs)) { if ($t.Path) { $n = 0; [void]$showing.TryGetValue($t.Path, [ref]$n); $showing[$t.Path] = $n + 1 } }
+    $fresh = @(foreach ($t in @($Tabs)) {
+        if ($before.Contains([long]$t.Id)) { continue }
+        if ($t.Path -and $placedCount.ContainsKey($t.Path) -and $showing[$t.Path] -le $placedCount[$t.Path]) { continue }
+        $t
+    })
+    if ($fresh.Count -eq 0) { return $null }
+    foreach ($t in $fresh) { if (-not $t.Path -or $t.Path.StartsWith('::')) { return $t } }
+    $fresh[0]
+}
+
+function Test-TabAt {
+    param($Tab, [string]$Path)
+    try { [string]::Equals([string]$Tab.Document.Folder.Self.Path, $Path, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+}
+
+function Move-TabTo {
+    # Navigates $Tab to $Path and waits until it shows it. A navigation can
+    # be dropped (a tab still starting up, Explorer busy after a crash), so
+    # one that has not arrived is sent once more. $false when the tab never
+    # got there.
+    param($Tab, [string]$Path, [switch]$AlreadySent)
+    $target = if ($Path.StartsWith('::')) { 'shell:' + $Path } else { $Path }
+    for ($try = 0; $try -lt 2; $try++) {
+        if ($try -gt 0 -or -not $AlreadySent) { $Tab.Navigate2($target) }
+        if (Wait-For -TimeoutMs 15000 -Predicate { Test-TabAt $Tab $Path }) { return $true }
+    }
+    $false
+}
+
+$script:NotRestored = 0
+
 function Open-ExplorerGroup {
     param([string[]]$Paths)
 
-    if (-not $Paths -or $Paths.Count -eq 0) { return }
+    # A folder that is gone would only cost the wait for it to arrive.
+    $present = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($p in @($Paths)) {
+        if ($p.StartsWith('::') -or [IO.Directory]::Exists($p)) { $present.Add($p) }
+        else { Write-Warning "No longer exists, so not opened: $p"; $script:NotRestored++ }
+    }
+    if ($present.Count -eq 0) { return }
 
-    $firstPath = [string]$Paths[0]
+    $firstPath = $present[0]
     $beforeHwnds = @($shellCom.Windows() | ForEach-Object { [int64]$_.HWND })
 
     # Open first path - new window
@@ -734,65 +822,60 @@ function Open-ExplorerGroup {
 
     if (-not $newHwnd) {
         Write-Warning "Timed out waiting for Explorer window for: $firstPath"
+        $script:NotRestored += $present.Count
         return
     }
 
     $hwnd = [IntPtr][int64]$newHwnd
     [SewRestoreApi]::ShowWindow($hwnd, 3) | Out-Null  # SW_MAXIMIZE
 
-    # The new tab: same HWND, a COM identity not seen before the request.
-    $findNewTab = {
-        foreach ($w in @($shellCom.Windows())) {
-            try {
-                if ([int64]$w.HWND -eq $newHwnd -and -not $beforeIds.Contains((Get-ComId $w))) {
-                    return $w
-                }
-            } catch { }
-        }
-        $null
+    # The window can appear before its folder does, or on This PC instead.
+    $first = Wait-For -TimeoutMs 5000 -Predicate { $t = @(Read-WindowTabs $newHwnd); if ($t.Count -gt 0) { $t[0] } else { $null } }
+    if (-not $first -or -not (Move-TabTo $first.Tab $firstPath -AlreadySent)) {
+        Write-Warning "The window did not reach its first folder: $firstPath"
+        $script:NotRestored++
     }
 
-    if ($Paths.Count -gt 1) {
-        foreach ($path in $Paths[1..($Paths.Count - 1)]) {
-            try {
-                # Snapshot existing tab identities so we can spot the new one
-                $beforeIds = New-Object 'System.Collections.Generic.HashSet[long]'
-                foreach ($w in @($shellCom.Windows())) {
-                    $beforeIds.Add((Get-ComId $w)) | Out-Null
-                }
+    $placed = New-Object 'System.Collections.Generic.List[string]'
+    $placed.Add($firstPath)
+    for ($i = 1; $i -lt $present.Count; $i++) {
+        $path = $present[$i]
+        try {
+            $before = @(Read-SettledTabs $newHwnd)
+            $beforeIds = [long[]]@($before | ForEach-Object { $_.Id })
+            $need = $before.Count + 1
+            $pick = { Select-NewTab -Tabs (Read-WindowTabs $newHwnd) -BeforeIds $beforeIds -Placed $placed.ToArray() -Need $need }
 
-                # Ask for the tab without keystrokes; Ctrl+T only when the
-                # window does not answer that, which needs focus and no IME.
-                $newTab = $null
-                if ([SewRestoreApi]::RequestNewTab($hwnd)) {
-                    $newTab = Wait-For -TimeoutMs 3000 -Predicate $findNewTab
-                }
-                if (-not $newTab) {
-                    [SewRestoreApi]::ShowWindow($hwnd, 3) | Out-Null
-                    [SewRestoreApi]::SetForegroundWindow($hwnd) | Out-Null
-                    Start-Sleep -Milliseconds 150
-                    [System.Windows.Forms.SendKeys]::SendWait('^t')
-                    $newTab = Wait-For -TimeoutMs 5000 -Predicate $findNewTab
-                }
-
-                if (-not $newTab) {
-                    Write-Warning "Timed out waiting for new tab for: $path"
-                    continue
-                }
-
-                # Navigate the new tab directly via COM (no SendKeys, no clipboard, no address bar)
-                $navPath = if ($path.Length -ge 2 -and $path.Substring(0, 2) -eq '::') { 'shell:' + $path } else { $path }
-                $newTab.Navigate2($navPath)
-
-                # Wait for navigation to complete
-                Wait-For -TimeoutMs 5000 -Predicate {
-                    try { -not $newTab.Busy } catch { $true }
-                } | Out-Null
-
-                [SewRestoreApi]::ShowWindow($hwnd, 3) | Out-Null  # Re-maximize
-            } catch {
-                Write-Warning "Failed to open tab for '$path': $_"
+            # Ask for the tab without keystrokes; Ctrl+T only when the
+            # window does not answer that, which needs focus and no IME.
+            $newTab = $null
+            if ([SewRestoreApi]::RequestNewTab($hwnd)) {
+                $newTab = Wait-For -TimeoutMs 3000 -Predicate $pick
             }
+            if (-not $newTab) {
+                [SewRestoreApi]::ShowWindow($hwnd, 3) | Out-Null
+                [SewRestoreApi]::SetForegroundWindow($hwnd) | Out-Null
+                Start-Sleep -Milliseconds 150
+                [System.Windows.Forms.SendKeys]::SendWait('^t')
+                $newTab = Wait-For -TimeoutMs 5000 -Predicate $pick
+            }
+
+            if (-not $newTab) {
+                Write-Warning "Timed out waiting for new tab for: $path"
+                $script:NotRestored++
+                continue
+            }
+            $placed.Add($path)
+
+            # Navigated through COM: no keystrokes, clipboard or address bar.
+            if (-not (Move-TabTo $newTab.Tab $path)) {
+                Write-Warning "A new tab did not reach its folder: $path"
+                $script:NotRestored++
+            }
+            [SewRestoreApi]::ShowWindow($hwnd, 3) | Out-Null  # Re-maximize
+        } catch {
+            Write-Warning "Failed to open tab for '$path': $_"
+            $script:NotRestored++
         }
     }
 }
@@ -837,6 +920,9 @@ if ($groups.Count -eq 0) {
             Start-Sleep -Milliseconds 200
         }
         Write-Host ("`nDone. {0} window(s) restored." -f $plan.Groups.Count) -ForegroundColor Green
+        if ($script:NotRestored -gt 0) {
+            Write-Host ("{0} folder(s) did not open; the warnings above name them. Running this file again opens only what is missing." -f $script:NotRestored) -ForegroundColor Yellow
+        }
     }
 }
 
@@ -1778,47 +1864,125 @@ function ConvertTo-ShellTarget {
     if ($Path.StartsWith('::')) { 'shell:' + $Path } else { $Path }
 }
 
+function Read-ShellWindowTabs {
+    # The window's tabs, each with its COM identity and the folder it shows
+    # ('' when none), from one pass over Shell.Windows(). With -Settled,
+    # read until two passes agree: the collection is read by index, so a tab
+    # that comes or goes during a pass shifts the others and one can be
+    # missed, and a missed tab would later look new.
+    param($Shell, [int64]$Hwnd, [switch]$Settled)
+    $read = {
+        $list = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($w in @($Shell.Windows())) {
+            try {
+                if ([int64]$w.HWND -ne $Hwnd) { continue }
+                $p = ''
+                try { $p = [string]$w.Document.Folder.Self.Path } catch { }
+                $list.Add([pscustomobject]@{ Tab = $w; Id = (Get-ComIdentity $w); Path = $p })
+            } catch { }
+        }
+        , $list.ToArray()
+    }
+    $last = & $read
+    if (-not $Settled) { return , $last }
+    for ($i = 0; $i -lt 10; $i++) {
+        Start-Sleep -Milliseconds 50
+        $next = & $read
+        if (((@($next | ForEach-Object { $_.Id }) | Sort-Object) -join ',') -eq ((@($last | ForEach-Object { $_.Id }) | Sort-Object) -join ',')) { return , $next }
+        $last = $next
+    }
+    , $last
+}
+
+# The restore template holds the same function; the tests check the two
+# stay identical.
+function Select-NewTab {
+    # The tab a new-tab request made, from the window's tabs read after it:
+    # $null until the window holds $Need tabs. A tab whose COM identity was
+    # there before is not it, and neither is one showing a folder already
+    # placed in this window, whatever its identity says: taking that one
+    # would navigate a restored folder away and leave the real new tab on
+    # This PC. Folders count as a multiset, so a new tab that opens on a
+    # placed folder (a new-tab page set to Downloads) still qualifies when
+    # more tabs show it than were placed. A tab showing no folder, or a
+    # shell location, is the likeliest new one. The compare window's module
+    # holds the same function; the tests check the two stay identical.
+    param([object[]]$Tabs, [long[]]$BeforeIds, [string[]]$Placed, [int]$Need)
+    if (@($Tabs).Count -lt $Need) { return $null }
+    $ignoreCase = [StringComparer]::OrdinalIgnoreCase
+    $before = New-Object 'System.Collections.Generic.HashSet[long]'
+    foreach ($id in @($BeforeIds)) { [void]$before.Add($id) }
+    $placedCount = New-Object 'System.Collections.Generic.Dictionary[string,int]' $ignoreCase
+    foreach ($p in @($Placed)) { if ($p) { $n = 0; [void]$placedCount.TryGetValue($p, [ref]$n); $placedCount[$p] = $n + 1 } }
+    $showing = New-Object 'System.Collections.Generic.Dictionary[string,int]' $ignoreCase
+    foreach ($t in @($Tabs)) { if ($t.Path) { $n = 0; [void]$showing.TryGetValue($t.Path, [ref]$n); $showing[$t.Path] = $n + 1 } }
+    $fresh = @(foreach ($t in @($Tabs)) {
+        if ($before.Contains([long]$t.Id)) { continue }
+        if ($t.Path -and $placedCount.ContainsKey($t.Path) -and $showing[$t.Path] -le $placedCount[$t.Path]) { continue }
+        $t
+    })
+    if ($fresh.Count -eq 0) { return $null }
+    foreach ($t in $fresh) { if (-not $t.Path -or $t.Path.StartsWith('::')) { return $t } }
+    $fresh[0]
+}
+
+function Move-ShellTabTo {
+    # Navigates $Tab to $Path (unless -AlreadySent) and waits until it shows
+    # it; a navigation that has not arrived after 15 s is sent once more,
+    # since one can be dropped while Explorer is busy. $false when the tab
+    # never got there.
+    param($Tab, [string]$Path, [switch]$AlreadySent)
+    for ($try = 0; $try -lt 2; $try++) {
+        if ($try -gt 0 -or -not $AlreadySent) { $Tab.Navigate2((ConvertTo-ShellTarget $Path)) }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline) {
+            try { if ([string]::Equals([string]$Tab.Document.Folder.Self.Path, $Path, [StringComparison]::OrdinalIgnoreCase)) { return $true } } catch { }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    $false
+}
+
 function Open-ShellWindow {
-    # A new Explorer window on $Path; its HWND, or $null after 10 s.
+    # A new Explorer window on $Path; its HWND, or $null after 10 s. The
+    # window can appear before its folder does, or on This PC instead, so
+    # its tab is followed until it shows $Path.
     param($Shell, [string]$Path)
     $before = @(foreach ($w in @($Shell.Windows())) { try { [int64]$w.HWND } catch { } })
     $Shell.Open((ConvertTo-ShellTarget $Path))
     $deadline = (Get-Date).AddSeconds(10)
-    while ((Get-Date) -lt $deadline) {
+    $hwnd = $null
+    while (-not $hwnd -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 100
         $new = @(foreach ($w in @($Shell.Windows())) { try { [int64]$w.HWND } catch { } }) | Where-Object { $before -notcontains $_ }
-        if (@($new).Count -gt 0) { return [int64]@($new)[0] }
+        if (@($new).Count -gt 0) { $hwnd = [int64]@($new)[0] }
     }
-    $null
+    if (-not $hwnd) { return $null }
+    $tabs = @(Read-ShellWindowTabs -Shell $Shell -Hwnd $hwnd)
+    if ($tabs.Count -gt 0) { [void](Move-ShellTabTo -Tab $tabs[0].Tab -Path $Path -AlreadySent) }
+    $hwnd
 }
 
 function Add-ShellTab {
     # A new tab on $Path in the window $Hwnd, asked for without keystrokes
     # (ExplorerWindowProbe3.RequestNewTab). $false when the window adds none
-    # within 5 s; nothing here ever presses keys.
+    # within 5 s, or the tab never reaches $Path; nothing here ever presses
+    # keys. The new tab is chosen by Select-NewTab, which never takes a tab
+    # already showing one of the window's folders.
     param($Shell, [int64]$Hwnd, [string]$Path)
     Initialize-ExplorerWindowProbe
-    $before = New-Object 'System.Collections.Generic.HashSet[long]'
-    foreach ($w in @($Shell.Windows())) { try { [void]$before.Add((Get-ComIdentity $w)) } catch { } }
+    $before = @(Read-ShellWindowTabs -Shell $Shell -Hwnd $Hwnd -Settled)
+    $beforeIds = [long[]]@($before | ForEach-Object { $_.Id })
+    $placed = [string[]]@($before | ForEach-Object { $_.Path } | Where-Object { $_ })
     if (-not [ExplorerWindowProbe3]::RequestNewTab($Hwnd)) { return $false }
     $tab = $null
     $deadline = (Get-Date).AddSeconds(5)
     while (-not $tab -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 100
-        foreach ($w in @($Shell.Windows())) {
-            try {
-                if ([int64]$w.HWND -eq $Hwnd -and -not $before.Contains((Get-ComIdentity $w))) { $tab = $w; break }
-            } catch { }
-        }
+        $tab = Select-NewTab -Tabs (Read-ShellWindowTabs -Shell $Shell -Hwnd $Hwnd) -BeforeIds $beforeIds -Placed $placed -Need ($before.Count + 1)
     }
     if (-not $tab) { return $false }
-    $tab.Navigate2((ConvertTo-ShellTarget $Path))
-    $deadline = (Get-Date).AddSeconds(5)
-    while ((Get-Date) -lt $deadline) {
-        try { if (-not $tab.Busy) { break } } catch { break }
-        Start-Sleep -Milliseconds 100
-    }
-    $true
+    Move-ShellTabTo -Tab $tab.Tab -Path $Path
 }
 
 function Invoke-OpenPlan {

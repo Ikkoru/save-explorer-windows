@@ -196,25 +196,27 @@ Every restore script and `state.json` lists open folders.
 
 ## The generated restore script
 
-Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, the `SewRestoreApi` P/Invoke class (`RequestNewTab`, `SetForegroundWindow`, `ShowWindow`), `Open-ExplorerGroup` and `Select-MissingFolders`.
+Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, the `SewRestoreApi` P/Invoke class (`RequestNewTab`, `SetForegroundWindow`, `ShowWindow`), the tab helpers (`Read-WindowTabs`, `Read-SettledTabs`, `Select-NewTab`, `Move-TabTo`), `Open-ExplorerGroup` and `Select-MissingFolders`.
 
 First it reads the paths open now and drops them from the saved windows (`Select-MissingFolders`): as a multiset, ignoring letter case, so a folder open once is skipped once. A window left with no folders is not opened. A restore run again after a partial loss therefore reopens only what is missing; a missing folder whose tab-mates are still open opens in a window of its own, not beside them (the compare window does that). Restore scripts written before 6.4 lack this and open everything. Reading the open paths goes through COM on the main thread, so a frozen Explorer window holds the restore up until it is closed.
 
-Then, per window group left:
+Then, per window group left, its folders that still exist (a missing one is named in a warning and skipped):
 
 1. `Shell.Application.Open(firstPath)`: no argument parsing, so spaces and special characters are safe
 2. Poll for the new HWND
 3. `ShowWindow(hwnd, 3)`: SW_MAXIMIZE
-4. For each additional path:
-   - snapshot COM identities of existing tabs
+4. Follow the window's tab until it shows `firstPath` (`Move-TabTo -AlreadySent`): the window can appear before its folder does, or on This PC instead
+5. For each additional path:
+   - read the window's tabs until two passes agree (`Read-SettledTabs`): `Shell.Windows()` is read by index, so a tab coming or going mid-pass shifts the rest and one can be missed
    - `RequestNewTab`: `WM_COMMAND 0xA21B` posted to the window's `ShellTabWindowClass`, found among all its descendants; no keystrokes, no focus needed
-   - poll up to 3 s for a tab with matching HWND and a new COM identity
+   - poll up to 3 s for the new tab (`Select-NewTab`): the window holds one tab more; a COM identity not seen before; and never a tab showing a folder already placed in this window. Without the last rule, an existing tab missed by the read looked new, the next folder replaced it, and the real new tab stayed on This PC
    - none: `SetForegroundWindow` → `SendKeys '^t'`, poll again (this fallback needs focus and no IME)
-   - `$newTab.Navigate2($path)`
-   - poll `$newTab.Busy` until false
+   - `Move-TabTo`: `Navigate2`, then wait up to 15 s for the tab to show the folder; a navigation that has not arrived is sent once more
    - re-maximize
 
-Restore files written before 7.0 always press Ctrl+T.
+Every folder that did not open is named in a warning and counted at the end, with the advice to run the file again, which opens only what is missing.
+
+Restore files written before 7.0 always press Ctrl+T; those written before 7.3 take the first tab with a new COM identity and do not check where a tab ended up, so after a crash one of their tabs can stay on This PC while another tab's folder is replaced. The compare window, which uses the module's code, has neither problem.
 
 ---
 
@@ -226,7 +228,7 @@ Restore files written before 7.0 always press Ctrl+T.
 
 **View checkboxes**, beside the legend. "Only windows with red or orange" leaves out each window none of whose rows is marked. It keeps every tab of a window that has one, so the tab-mates a folder goes back beside stay in sight, and windows keep their numbers. "Show full paths" turns the "In" column into "Full path", the folder's own name included. Toggling either refills both lists and ticks again the rows still shown. Both are remembered in `compare window.json` beside the save folders (`Saved sessions\`, or the parent of `-BackupFolder`), written on each toggle, and nothing is remembered while that folder does not exist.
 
-**Opening.** "Open ticked" scans what is open now, builds a plan with `New-OpenPlan`, and hands it to `Invoke-OpenPlan` on a separate STA runspace, which a timer polls for progress. A frozen Explorer window can then hold up only the opening, never the window. The plan skips folders already open. Any other folder goes in as a tab of the window holding most of its former tab-mates, open now or opened earlier in the plan; failing that, into a new window that its later tab-mates join. `Add-ShellTab` asks for tabs with `RequestNewTab` only; when a window does not answer, the folder opens in a new window instead and its later tab-mates follow it there. Nothing in the compare window presses keys.
+**Opening.** "Open ticked" scans what is open now, builds a plan with `New-OpenPlan`, and hands it to `Invoke-OpenPlan` on a separate STA runspace, which a timer polls for progress. A frozen Explorer window can then hold up only the opening, never the window. The plan skips folders already open. Any other folder goes in as a tab of the window holding most of its former tab-mates, open now or opened earlier in the plan; failing that, into a new window that its later tab-mates join. `Add-ShellTab` asks for tabs with `RequestNewTab` only and picks the new tab with `Select-NewTab`, the restore file's function word for word (the tests compare them); `Move-ShellTabTo` then waits for the tab to show its folder, as `Open-ShellWindow` does for a new window's first tab. When a window does not answer, or the tab never arrives, the folder opens in a new window instead and its later tab-mates follow it there. Nothing in the compare window presses keys.
 
 **Other buttons.** "Tick all missing" ticks every red row. "Mark as checked" calls `Remove-BackupIncident`. "Settings..." edits the six values of `Settings.ini` with controls bounded by their allowed ranges and writes it with `Write-BackupSettings`, which keeps the template's explanations but not a person's own comments.
 

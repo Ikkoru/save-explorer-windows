@@ -367,6 +367,33 @@ try {
             $one.Groups[0].Count -eq 1 -and $one.Groups[0][0] -eq 'C:\X')
     }
 
+    # The choice of the tab a new-tab request made, as the restore file
+    # holds it. The case it exists for: the window's first tab was missed
+    # when the tabs were read before the request, so its identity looks new.
+    $picker = $restoreAst.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Select-NewTab' }, $true)
+    Check 'restore file: carries the new-tab choice' ($null -ne $picker)
+    if ($picker) {
+        . ([scriptblock]::Create($picker.Extent.Text))
+        function T { param([long]$Id, [string]$Path) [pscustomobject]@{ Id = $Id; Path = $Path; Tab = $null } }
+        $homePage = '::{F874310E-B6B7-47DC-BC84-B9E6B38F5903}'
+        $pick = Select-NewTab -Tabs @((T 1 'C:\A'), (T 2 $homePage)) -BeforeIds @(1) -Placed @('C:\A') -Need 2
+        Check 'new tab: the one that was not there before' ($pick.Id -eq 2)
+        $pick = Select-NewTab -Tabs @((T 1 'C:\A'), (T 2 'C:\Dl')) -BeforeIds @() -Placed @('C:\A') -Need 2
+        Check 'new tab: an existing tab missed by the read is never taken' ($pick.Id -eq 2)
+        Check 'new tab: nothing until the window has one more tab' ($null -eq (Select-NewTab -Tabs @(T 1 $homePage) -BeforeIds @() -Placed @() -Need 2))
+        Check 'new tab: nothing when only placed folders look new' ($null -eq (Select-NewTab -Tabs @((T 1 'C:\A'), (T 3 'C:\B')) -BeforeIds @(2) -Placed @('C:\A', 'C:\B') -Need 2))
+        $pick = Select-NewTab -Tabs @((T 1 'C:\Dl'), (T 2 'C:\Dl')) -BeforeIds @(1) -Placed @('C:\Dl') -Need 2
+        Check 'new tab: one opening on a placed folder counts when more show it than were placed' ($pick.Id -eq 2)
+        $pick = Select-NewTab -Tabs @((T 1 'C:\A'), (T 5 'C:\Q'), (T 6 '')) -BeforeIds @(1) -Placed @('C:\A') -Need 3
+        Check 'new tab: among several, one showing no folder first' ($pick.Id -eq 6)
+        Check 'new tab: letter case does not hide a placed folder' ($null -eq (Select-NewTab -Tabs @((T 1 'c:\a'), (T 2 'C:\B')) -BeforeIds @() -Placed @('C:\A', 'C:\B') -Need 2))
+    }
+    # The module's copy, used by the compare window, must match the restore
+    # file's word for word.
+    $moduleAst = [Management.Automation.Language.Parser]::ParseFile($ModulePath, [ref]$null, [ref]$null)
+    $modulePicker = @($moduleAst.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Select-NewTab' }, $false))
+    Check 'new tab: the module and the restore file hold the same choice' ($picker -and $modulePicker.Count -eq 1 -and $modulePicker[0].Extent.Text -ceq $picker.Extent.Text)
+
     $b = Read-SessionBackup -Path $rf
     $same = $b.Groups.Count -eq 3
     for ($i = 0; $same -and $i -lt 3; $i++) { $same = (Join-Paths $b.Groups[$i]) -ceq (Join-Paths $groups[$i]) }

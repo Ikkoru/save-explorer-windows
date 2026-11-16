@@ -43,6 +43,7 @@ Run the setup normally, not "as administrator". If you do want to set it up by h
 Right-click a `Restore Explorer Session ... .ps1` file and choose **Run with PowerShell**.
 
 - Folders that are already open are skipped, so it is safe to run after only some were lost.
+- If a folder does not open, it says which at the end. Run the same file again: it opens only what is still missing. A folder that no longer exists is skipped with a note.
 - Each window opens maximized, and its tabs are added one by one. Leave the keyboard alone until it says "Done": each new window takes the keyboard as it appears.
 - Tabs come back in the order Windows lists them, which is usually, but not always, the order they had.
 - To bring back only some folders, or to put them back beside tabs that are still open, use the compare window instead.

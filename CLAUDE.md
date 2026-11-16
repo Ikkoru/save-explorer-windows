@@ -23,7 +23,7 @@ The rule file has each one's full account. Do not "simplify" these away.
 3. **An elevated process sees no non-elevated Explorer windows.** Keep the warning for zero windows while elevated.
 4. **`ConvertFrom-Json` unwraps one-element arrays**: the groups are re-cast with `,[string[]]@($_)`, both parts required.
 5. **Path data and the frozen-tab report travel as base64 of UTF-8 JSON**, never as literals in the generated script: the tooling layers around COM garble them otherwise.
-6. **Tabs are added and navigated without keystrokes**: `RequestNewTab` posts `WM_COMMAND 0xA21B` to the window's `ShellTabWindowClass`, then `Navigate2`, polling `Busy`. Only a restore file falls back to `Ctrl+T`, when a window does not answer; the compare window never presses keys.
+6. **Tabs are added and navigated without keystrokes**: `RequestNewTab` posts `WM_COMMAND 0xA21B` to the window's `ShellTabWindowClass`, then `Navigate2`. Only a restore file falls back to `Ctrl+T`, when a window does not answer; the compare window never presses keys. The new tab is chosen by `Select-NewTab`, never a tab already showing a folder placed in that window, and each tab is followed until it shows its folder (`Move-TabTo`): taking the first new-looking COM identity once replaced a restored folder and left This PC in its place.
 7. **COM identity is compared by IUnknown pointer** (`Get-ComId`), released in a `finally`.
 8. **Poll with `Wait-For`, don't sleep**; the two fixed sleeps that remain are deliberate.
 9. **Each tab navigates in its own `try/catch`**, so one bad path doesn't abort the window's other tabs.

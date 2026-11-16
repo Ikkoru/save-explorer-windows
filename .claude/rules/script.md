@@ -92,7 +92,9 @@ Do not replace this with plain-text path literals in the generated script, no ma
 
 Do **not** drive tab navigation with `Alt+D` → clipboard → `Ctrl+V` → `Enter`. That path is slow, IME-fragile, and depends on the address bar's state.
 
-Instead: snapshot COM object identities → ask the window for a new tab → poll for the new tab entry → `$newTab.Navigate2($path)` → poll `$newTab.Busy` until false.
+Instead: read the window's tabs until two passes agree → ask the window for a new tab → poll until `Select-NewTab` names it → `Navigate2` → wait until the tab shows the folder, sending the navigation once more if it has not (`Move-TabTo` in the restore template, `Move-ShellTabTo` in the module).
+
+The new tab is not simply "a COM identity not seen before". `Shell.Windows()` is read by index, so a tab that comes or goes during a read shifts the rest and an existing tab can be missed; it then looks new. After a crash, with Explorer restarting and HDDs spinning up, a restore took a window's fully loaded first tab for the new one, sent the next folder there, and left the real new tab on This PC: the first folder vanished, and a This PC tab stood where the next folder belonged. `Select-NewTab` therefore also waits for the window to hold one tab more, and never takes a tab showing a folder already placed in that window (counted as a multiset). The restore template and the module each hold it, word for word, and the tests compare the two. Nothing here can be seen to fail on a calm desktop: a full 78-folder restore of the same session went right with the old code too.
 
 No COM method opens a tab in an existing window, but the window's own command does: `WM_COMMAND` with `0xA21B`, posted to its `ShellTabWindowClass`. That child sits several levels below the top window, so `FindWindowEx` misses it; search all descendants (`EnumChildWindows`). Measured on this PC: tabs added beside the first, the foreground window unchanged, no keystrokes. `ExplorerWindowProbe3.RequestNewTab` in the module and `SewRestoreApi.RequestNewTab` in the restore template both do this.
 
