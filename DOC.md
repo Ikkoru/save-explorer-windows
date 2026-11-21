@@ -14,6 +14,7 @@ How the program is put together and what it does at runtime. `CLAUDE.md` holds t
 | `Set up automatic backups.ps1` | Installs, updates or removes the scheduled task, from `New-AutoBackupTask` in the module. Run by a person; asks before changing anything, and refuses to run elevated |
 | `Settings.ini` | The automatic backups' settings, each explained in the file. Rewritten with the defaults when missing; an unreadable value counts as its default and is logged |
 | `Tests\Run tests.ps1` | The module's checks. Needs no open Explorer window, and never registers a task |
+| `Tests\Run with fault.ps1` | Proves a check fails: runs the tests against a temporary copy of the module with one piece of text replaced (`-Find`, `-Replace`) |
 | `README.md` | For people using it: how to save, set up the task and restore, and what to expect, in plain words |
 | `.githooks/pre-push` | Refuses a push that would publish the archived private history or a private address (*Publishing*) |
 | `.github/FUNDING.yml` | The repository's Sponsor button on GitHub, pointing at the maintainer's GitHub Sponsors and Ko-fi pages; the README's *Support* section links there with the button `.github/support_me_on_kofi_blue.webp` |

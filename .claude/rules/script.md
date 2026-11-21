@@ -222,7 +222,7 @@ LC_ALL=C grep -c '[^ -~	]' *.ps1 "$m" "Tests/Run tests.ps1"   # 0 each: pure ASC
 
 Then:
 
-1. **The tests**: `powershell -NoProfile -ExecutionPolicy Bypass -File "Tests\Run tests.ps1"`, exit 0. A new rule gets a check, and the check is shown to fail on a broken copy of the module (`-ModulePath`).
+1. **The tests**: `powershell -NoProfile -ExecutionPolicy Bypass -File "Tests\Run tests.ps1"`, exit 0. A new rule gets a check, and the check is shown to fail on a broken copy of the module: `Tests\Run with fault.ps1 -Find '<text>' -Replace '<text>'` (`-Last` for text the template and the module both hold) makes the copy, runs the tests against it with `-ModulePath`, lists what failed, and warns when nothing did.
 2. **A parse** of every script and the module (`[Management.Automation.Language.Parser]::ParseFile`, errors empty). The tests parse a written restore file.
 3. **A live run by hand**, twice, with `-ManualFolder` in the scratchpad: once with an empty label, once with `debug`, since the two report levels are rendered by different filters over the same lines. Answer the prompts by redirecting stdin (`"label`n`n" | powershell -File ...`). The apartment state should print `STA`, the window count should match reality, and the process should exit rather than hang after the final prompt.
 4. **A live `-Auto -NoWindow` run** with `-BackupFolder` and `-SettingsPath` in the scratchpad: `log.txt` gets one line, and the save folder holds a `.kopiaignore`. A change to the default folders or the move from old ones is run from a copy of the script and module in the scratchpad, with no folder parameters, laid out as the old version left it.
