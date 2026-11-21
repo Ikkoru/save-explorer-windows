@@ -113,7 +113,15 @@ Every entry is read on a worker runspace with a per-tab deadline, `$TabReadTimeo
 | Overran the deadline | Worker abandoned, entry recorded as frozen, scan continues |
 | RPC-family HRESULT | Scan stops; everything collected so far is still saved |
 
-After the entries, the window manager's list of folder windows (`Get-ExplorerWindowProbe`) is compared with the HWNDs COM reported, when no tab froze. A visible, responding `CabinetWClass` window that COM never reported counts as **unlisted** (`Unlisted`, with the remedy in `Error`). This happens when the shell (the taskbar's explorer.exe) restarts while folder windows stay open in a process of their own: its new window list starts empty and those windows never join it, so COM reports fewer windows, or none, for as long as they stay open. Windows opened afterwards register normally, so closing the old windows and reopening their folders from a backup ends it.
+After the entries, the window manager's list of folder windows (`Get-ExplorerWindowProbe`) is compared with the HWNDs COM reported, when no tab froze. A visible, responding `CabinetWClass` window that COM never reported counts as **unlisted** (`Unlisted`, with the remedy in `Error`). This happens when the shell (the taskbar's explorer.exe) restarts while folder windows stay open in a process of their own: its new window list starts empty and those windows never join it, so COM reports fewer windows, or none, for as long as they stay open. Windows opened afterwards register normally, so closing the old windows and reopening their folders from a backup ends it. Unlisted windows are what `SeparateProcess` (*Launch folder windows in a separate process*) costs: with it off, the same restart closes every folder window instead.
+
+**Reading unlisted windows anyway.** UI Automation does not depend on the shell's list. A save by hand that finds unlisted windows offers to read them (`Read-UnlistedWindows`), one window per `Invoke-ComStep` call with a 120 s deadline, by `$ReadUnlistedWindowScript`:
+- a minimized window draws no tabs or address bar, so it is shown without being activated (`SW_SHOWNOACTIVATE`) and afterwards put back with its own `WINDOWPLACEMENT`, minimized (`SW_SHOWMINNOACTIVE`), keeping "restore to maximized";
+- each tab (`TabItem`) is selected in turn through `SelectionItemPattern`, and the tab that was selected is selected again at the end;
+- only the active tab's address is readable: the segments of `PART_BreadcrumbBar` (`BreadcrumbBarItemControl` names, root first). The read waits until the last segment equals the tab's name, or the segments changed and settled;
+- segments become a path from the drive segment `(X:)` when the joined names exist on disk, otherwise by display name through the shell namespace (`NameSpace(0)`, This PC as `NameSpace(17)`), which also finds folders shown under another name. A single segment (This PC, Home) is no folder.
+
+The automatic run cannot do this unseen, so it shows a notice instead (`Start-UnlistedNotice`, a message box from a hidden process), once per shell start (`Test-UnlistedNoticeDue`, `unlistedNoticeFor` in `state.json`), and logs that it did.
 
 A scan with a frozen tab, a stop partway or an unlisted window is **incomplete**: the automatic run saves what it read and judges nothing as lost.
 
@@ -168,7 +176,7 @@ Losing everything to a restart, a sign-out or a crash that Windows recorded stil
 
 Saves from v5.3, which had no metadata, still read: their time comes from the file name, and they count as complete when they carry no frozen-tab report. `Read-SessionBackup` returns `$null` for anything it cannot read, so cleanup never touches such a file.
 
-**`state.json`**: `{ format, lastEmptyAt, incidents: [ { id, detectedAt, baselineFile, baselineSavedAt, currentFile, cause, reason, missing: [paths], notified } ] }`, `cause` being `restart`, `explorer-restart`, `crash` or `drop`. Written to `state.json.tmp`, then swapped in with `File.Replace`.
+**`state.json`**: `{ format, lastEmptyAt, incidents: [ { id, detectedAt, baselineFile, baselineSavedAt, currentFile, cause, reason, missing: [paths], notified } ], unlistedNoticeFor }`, `unlistedNoticeFor` being the shell start the unlisted-window notice was last shown for, and `cause` being `restart`, `explorer-restart`, `crash` or `drop`. Written to `state.json.tmp`, then swapped in with `File.Replace`.
 
 **`log.txt`**: one line per run, naming files and counts, never folder paths. Past 400 KB it is cut to its last 2000 lines.
 
@@ -279,7 +287,7 @@ Before a push: `git grep` over the tree for private data (machine paths, people'
 - **A frozen window's paths are reported, not recovered.** Its tabs are skipped after the per-tab deadline each and described from Win32 data (title, HWND, PID, placement, hung flag). A path only survives in the rare case where the tab answered `LocationURL` before blocking; the usual block point is `Windows().Item($i)`, which yields nothing. Windows 11 draws the address bar in XAML, so even `WM_GETTEXT` gives nothing back, and the title is all there is. Closing the hung window and re-running the save script captures everything else cleanly.
 - **Each frozen tab costs a scan the full per-tab deadline** (`$TabReadTimeoutMs` in the module), so a hung window costs that times its tab count.
 - **If the shell COM service itself is down (trap 12), nothing can be saved** — not one path, from any window. The run degrades to the Win32 window list and recovery advice. Waiting for the hung window to free itself is the only fix that keeps the session.
-- **Folder windows left over from a shell restart cannot be read at all** (*The scan*, unlisted windows), and the automatic backups save nothing of them until they are closed. Only the run's log line and a save by hand say so; no window opens about it.
+- **Folder windows left over from a shell restart cannot be read through COM** (*The scan*, unlisted windows), so the automatic backups save nothing of them until they are closed; a notice says so once per shell start. Only a save by hand reads them, through their address bars, switching their tabs on screen. A folder whose segments neither join into an existing path nor match the shell namespace by display name stays unread, and so does a window that shows its path collapsed behind the address bar's "..." button.
 
 ## Later
 

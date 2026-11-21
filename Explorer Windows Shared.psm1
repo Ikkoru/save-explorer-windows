@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '7.4'
+$script:ProgramVersion = '7.5'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 
@@ -198,6 +198,157 @@ $script:ReadWindowScript = {
     }
     $Progress['Stage'] = 'done'
     [pscustomobject]$info
+}
+
+# Runs on the worker. Reads one folder window that COM does not list (see
+# Invoke-ExplorerScan) through UI Automation, which does not depend on the
+# shell's window list: selects each tab in turn, reads the address bar's
+# segments, turns them back into a path, then selects the tab that was
+# selected before. Only the active tab's address is readable, hence the
+# switching, which the person sees: only a save by hand uses this.
+$script:ReadUnlistedWindowScript = {
+    param([long]$Hwnd, $Progress)
+    $ErrorActionPreference = 'Stop'
+    $Progress['Stage'] = 'UI Automation'
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $A = [Windows.Automation.AutomationElement]
+    $scope = [Windows.Automation.TreeScope]::Descendants
+    $win = $A::FromHandle([IntPtr]$Hwnd)
+    $count = @{ Unread = 0; NonFolder = 0 }
+
+    # A minimized window draws no address bar or tabs, so UI Automation
+    # finds none. Shown without being activated while it is read, then put
+    # back with its saved placement, minimized, and still restoring
+    # maximized if it did.
+    Add-Type -ErrorAction SilentlyContinue -TypeDefinition (@(
+        'using System; using System.Runtime.InteropServices;'
+        'public class SewUiaWindow {'
+        '  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }'
+        '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }'
+        '  [StructLayout(LayoutKind.Sequential)] public struct PLACEMENT { public int Length, Flags, ShowCmd; public POINT Min, Max; public RECT Normal; }'
+        '  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);'
+        '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);'
+        '  [DllImport("user32.dll")] static extern bool GetWindowPlacement(IntPtr h, ref PLACEMENT p);'
+        '  [DllImport("user32.dll")] static extern bool SetWindowPlacement(IntPtr h, ref PLACEMENT p);'
+        '  public static PLACEMENT Get(IntPtr h) { PLACEMENT p = new PLACEMENT(); p.Length = Marshal.SizeOf(p); GetWindowPlacement(h, ref p); return p; }'
+        '  public static void PutBackMinimized(IntPtr h, PLACEMENT p) { p.ShowCmd = 7; SetWindowPlacement(h, ref p); }'
+        '}'
+    ) -join "`n")
+    $wasMinimized = [SewUiaWindow]::IsIconic([IntPtr]$Hwnd)
+    $placement = [SewUiaWindow]::Get([IntPtr]$Hwnd)
+    if ($wasMinimized) {
+        $Progress['Stage'] = 'showing the minimized window'
+        [void][SewUiaWindow]::ShowWindow([IntPtr]$Hwnd, 4)   # SW_SHOWNOACTIVATE
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline -and -not $win.FindFirst($scope, (New-Object Windows.Automation.PropertyCondition($A::AutomationIdProperty, 'PART_BreadcrumbBar')))) {
+            Start-Sleep -Milliseconds 150
+        }
+    }
+    try {
+
+    # The address bar's segments, root first: "This PC", "Data (Z:)", ...
+    $crumbsOf = {
+        $bar = $win.FindFirst($scope, (New-Object Windows.Automation.PropertyCondition($A::AutomationIdProperty, 'PART_BreadcrumbBar')))
+        if (-not $bar) { return , [string[]]@() }
+        $items = $bar.FindAll($scope, (New-Object Windows.Automation.PropertyCondition($A::ClassNameProperty, 'FileExplorerExtensions.BreadcrumbBarItemControl')))
+        , [string[]]@(foreach ($i in $items) { [string]$i.Current.Name })
+    }
+
+    # Segments to a path: from the drive segment "(X:)" when the names join
+    # into a folder that exists; otherwise by display name through the shell
+    # namespace, which also finds folders shown under another name
+    # (Downloads, a desktop.ini name). $null when neither works.
+    $resolve = {
+        param([string[]]$Crumbs)
+        for ($k = 0; $k -lt $Crumbs.Count; $k++) {
+            if ($Crumbs[$k] -match '\(([A-Za-z]):\)\s*$') {
+                $p = $Matches[1].ToUpper() + ':\'
+                $rest = @($Crumbs | Select-Object -Skip ($k + 1))
+                if ($rest.Count -gt 0) { $p = [IO.Path]::Combine([string[]](@($p) + $rest)) }
+                if ([IO.Directory]::Exists($p)) { return $p }
+                break
+            }
+        }
+        if ($null -eq $global:SaveShell) { $global:SaveShell = New-Object -ComObject Shell.Application }
+        $folder = $global:SaveShell.NameSpace(0)
+        $first = $true
+        foreach ($c in $Crumbs) {
+            $next = $null
+            foreach ($it in @($folder.Items())) { if ($it.IsFolder -and $it.Name -eq $c) { $next = $it; break } }
+            if (-not $next -and $first) {
+                $pc = $global:SaveShell.NameSpace(17)
+                if ($pc.Title -eq $c) { $folder = $pc; $first = $false; continue }
+            }
+            if (-not $next) { return $null }
+            $folder = $next.GetFolder
+            $first = $false
+        }
+        [string]$folder.Self.Path
+    }
+
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    $add = {
+        param([string[]]$Crumbs, [string]$Name)
+        # A single segment is a root such as This PC or Home: no folder,
+        # skipped like any non-folder tab.
+        if ($Crumbs.Count -lt 2) { $count.NonFolder++; return }
+        $p = & $resolve $Crumbs
+        if (-not $p) { $count.Unread++; return }
+        $paths.Add($p)
+        $names.Add($(if ($Name) { $Name } else { $Crumbs[$Crumbs.Count - 1] }))
+    }
+
+    $Progress['Stage'] = 'tabs'
+    $tabCond = New-Object Windows.Automation.PropertyCondition($A::ControlTypeProperty, [Windows.Automation.ControlType]::TabItem)
+    $tabItems = @($win.FindAll($scope, $tabCond))
+    if ($tabItems.Count -eq 0) {
+        $c = & $crumbsOf
+        if ($c.Count -eq 0) { $count.Unread++ } else { & $add $c '' }
+    } else {
+        $selectedBefore = $null
+        foreach ($t in $tabItems) {
+            $sp = $t.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)
+            if ($sp.Current.IsSelected) { $selectedBefore = $sp }
+        }
+        $previous = $null
+        $n = 0
+        foreach ($t in $tabItems) {
+            $n++
+            $Progress['Stage'] = "tab $n of $($tabItems.Count)"
+            $name = [string]$t.Current.Name
+            $sp = $t.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern)
+            if (-not $sp.Current.IsSelected) { $sp.Select() }
+            # The address bar follows the tab a moment later: wait until its
+            # last segment is the tab's name, or it has changed and settled.
+            $deadline = (Get-Date).AddSeconds(3)
+            $c = [string[]]@()
+            $last = $null
+            while ((Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 150
+                $c = & $crumbsOf
+                $key = $c -join [char]1
+                if ($c.Count -gt 0 -and $c[$c.Count - 1] -eq $name) { break }
+                if ($null -ne $last -and $key -eq $last -and $key -ne $previous) { break }
+                $last = $key
+            }
+            $key = $c -join [char]1
+            if ($c.Count -gt 0 -and ($c[$c.Count - 1] -eq $name -or $key -ne $previous)) { & $add $c $name } else { $count.Unread++ }
+            $previous = $key
+        }
+        if ($selectedBefore) { try { $selectedBefore.Select() } catch { } }
+    }
+    } finally {
+        if ($wasMinimized) { [SewUiaWindow]::PutBackMinimized([IntPtr]$Hwnd, $placement) }
+    }
+    $Progress['Stage'] = 'done'
+    [pscustomobject]@{
+        Paths     = $paths.ToArray()
+        Names     = $names.ToArray()
+        Unread    = $count.Unread
+        NonFolder = $count.NonFolder
+        Tabs      = $tabItems.Count
+    }
 }
 
 $script:CountWindowsScript = {
@@ -506,19 +657,20 @@ function Invoke-ExplorerScan {
     # judged as complete, every folder in them would count as lost. Not
     # counted when a tab froze: its window is missing from the answers too,
     # and the frozen-tab report covers it.
-    $unlisted = 0
+    $unlistedHwnds = @()
     if (-not $enumerationBlocked -and $frozen.Count -eq 0) {
-        $unlisted = @(Get-ExplorerWindowProbe | Where-Object {
+        $unlistedHwnds = @(Get-ExplorerWindowProbe | Where-Object {
             $_.ClassName -eq 'CabinetWClass' -and $_.Visible -and -not $_.Hung -and -not $seenHwnds.Contains([long]$_.Hwnd)
-        }).Count
-        if ($unlisted -gt 0) {
-            $enumerationError = ("{0} Explorer window(s) on screen are missing from Explorer's window list, so their folders cannot be read. This happens when Explorer restarts while folder windows stay open. Close those windows and reopen their folders from the newest backup to save them again." -f $unlisted)
+        } | ForEach-Object { [int64]$_.Hwnd })
+        if ($unlistedHwnds.Count -gt 0) {
+            $enumerationError = Get-UnlistedMessage $unlistedHwnds.Count
             if ($ShowProgress) { Write-Warning $enumerationError }
         }
     }
 
     [pscustomobject]@{
-        Unlisted         = $unlisted      # folder windows on screen that COM did not list
+        Unlisted         = $unlistedHwnds.Count   # folder windows on screen that COM did not list
+        UnlistedHwnds    = $unlistedHwnds
         Groups           = $groups        # HWND -> paths, tabs in order
         Names            = $names         # HWND -> display names, parallel to Groups
         Frozen           = $frozen
@@ -530,6 +682,51 @@ function Invoke-ExplorerScan {
         HResult          = $enumerationHResult
         TimeoutSec       = $timeoutSec
     }
+}
+
+function Get-UnlistedMessage {
+    param([int]$Count)
+    "{0} Explorer window(s) on screen are missing from Explorer's window list, so their folders cannot be read the usual way. This happens when Explorer restarts while folder windows stay open. A save by hand can read them by switching through their tabs; after that, close those windows and reopen their folders from that save." -f $Count
+}
+
+function Read-UnlistedWindows {
+    # Adds the folder windows COM does not list to $Scan, each read through
+    # UI Automation on the worker ($ReadUnlistedWindowScript), with a
+    # deadline per window, and sets Unlisted and Error to what is still not
+    # fully read. Switches the windows' tabs while it reads.
+    param($Scan, [switch]$ShowProgress)
+    $stillUnread = 0
+    $readTabs = 0
+    $w = 0
+    $all = @($Scan.UnlistedHwnds)
+    foreach ($h in $all) {
+        $w++
+        $r = Invoke-ComStep -Script $script:ReadUnlistedWindowScript -Argument ([long]$h) -TimeoutMs 120000
+        if ($r.TimedOut -or $r.Error -or -not $r.Output) {
+            $stillUnread++
+            if ($ShowProgress) { Write-Warning ("Window {0} of {1} could not be read: {2}" -f $w, $all.Count, $(if ($r.TimedOut) { 'it stopped answering (' + $r.Progress['Stage'] + ')' } else { $r.Error })) }
+            continue
+        }
+        $o = $r.Output
+        $got = @($o.Paths).Count
+        if ($got -gt 0) {
+            $key = [int64]$h
+            $Scan.Groups[$key] = [Collections.Generic.List[string]]::new([string[]]@($o.Paths))
+            $Scan.Names[$key]  = [Collections.Generic.List[string]]::new([string[]]@($o.Names))
+            [void]$Scan.SeenHwnds.Add($key)
+        }
+        $readTabs += $got
+        if ([int]$o.Unread -gt 0) { $stillUnread++ }
+        if ($ShowProgress) {
+            $extra = ''
+            if ([int]$o.NonFolder -gt 0) { $extra += ", {0} not on a folder (This PC, Home)" -f $o.NonFolder }
+            if ([int]$o.Unread -gt 0) { $extra += ", {0} could not be read" -f $o.Unread }
+            Write-Host ("  Window {0} of {1}: {2} folder tab(s) read{3}" -f $w, $all.Count, $got, $extra)
+        }
+    }
+    $Scan.Unlisted = $stillUnread
+    $Scan.Error = if ($stillUnread -gt 0) { "{0} of the {1} window(s) missing from Explorer's window list could not be read completely, even through their tabs." -f $stillUnread, $all.Count } else { $null }
+    [pscustomobject]@{ Windows = $all.Count; Tabs = $readTabs; Unread = $stillUnread }
 }
 
 function Get-ScanGroups {
@@ -1227,10 +1424,23 @@ function Read-BackupSettings {
 
 function New-BackupState {
     [pscustomobject]@{
-        LastEmptyAt = $null
-        Incidents   = New-Object 'System.Collections.Generic.List[object]'
-        Unreadable  = $false
+        LastEmptyAt       = $null
+        Incidents         = New-Object 'System.Collections.Generic.List[object]'
+        UnlistedNoticeFor = $null   # the shell start the unlisted-window notice was shown for
+        Unreadable        = $false
     }
+}
+
+function Test-UnlistedNoticeDue {
+    # The notice about folder windows missing from Explorer's window list
+    # comes once per shell start: those windows stay unreadable for as long
+    # as they stay open, and a restart of the shell is what can cause it
+    # again. Without a known shell start, once ever.
+    param([int]$Unlisted, $ShellStart, $NoticedFor)
+    if ($Unlisted -le 0) { return $false }
+    if ($null -eq $NoticedFor) { return $true }
+    if ($null -eq $ShellStart) { return $false }
+    [DateTimeOffset]$ShellStart -ne [DateTimeOffset]$NoticedFor
 }
 
 function Read-BackupState {
@@ -1244,6 +1454,7 @@ function Read-BackupState {
     try {
         $raw = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json
         $state.LastEmptyAt = ConvertTo-Moment $raw.lastEmptyAt
+        $state.UnlistedNoticeFor = ConvertTo-Moment $raw.unlistedNoticeFor
         foreach ($i in @($raw.incidents)) {
             if ($null -eq $i) { continue }
             # Assigned directly, not as the value of an if: that would unwrap
@@ -1292,6 +1503,7 @@ function Write-BackupState {
         format      = 1
         lastEmptyAt = $(if ($State.LastEmptyAt) { $State.LastEmptyAt.ToString('o') } else { $null })
         incidents   = $incidents
+        unlistedNoticeFor = $(if ($State.UnlistedNoticeFor) { $State.UnlistedNoticeFor.ToString('o') } else { $null })
     }
     $json = ConvertTo-Json -InputObject $obj -Depth 6
     $path = Join-Path $Folder 'state.json'

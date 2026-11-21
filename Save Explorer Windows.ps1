@@ -354,6 +354,20 @@ function Invoke-ManualSave {
 
     $scan = Invoke-ExplorerScan -ShowProgress
 
+    # Folder windows Explorer's window list lost (Invoke-ExplorerScan) can
+    # still be read through their address bars, one tab at a time. It
+    # switches their tabs on screen, so it is offered, not done.
+    if ($scan.Unlisted -gt 0) {
+        Write-Host ""
+        $answer = Read-Host ("Read those {0} window(s) by switching through their tabs? Leave them alone until it is done. [Y/n]" -f $scan.Unlisted)
+        if ($answer -notmatch '^\s*[nN]') {
+            $fallback = Read-UnlistedWindows -Scan $scan -ShowProgress
+            Write-Host ("Read {0} folder tab(s) from {1} window(s) through their address bars." -f $fallback.Tabs, $fallback.Windows)
+            if ($fallback.Unread -gt 0) { Write-Warning $scan.Error }
+            else { Write-Host "Once this is saved, close those windows and open their folders again from this save, so the automatic backups see them." -ForegroundColor Yellow }
+        }
+    }
+
     $frozenNote = New-FrozenReport -Scan $scan -DebugReport:$DebugReport
     if ($frozenNote) { Show-FrozenReport -Scan $scan -Note $frozenNote -DebugReport:$DebugReport }
 
@@ -423,6 +437,16 @@ function Start-IncidentWindow {
     Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
 }
 
+function Start-UnlistedNotice {
+    # A message box from a separate hidden process, so this run can finish
+    # while it waits; DefaultDesktopOnly brings it to the front.
+    param([int]$Count)
+    $text = ("Save Explorer Windows cannot read {0} of your File Explorer window(s). File Explorer restarted while they stayed open, and Windows no longer lists them, so the automatic backups leave their folders out.`r`n`r`nTo keep them:`r`n1. Right-click 'Save Explorer Windows.ps1' and choose Run with PowerShell. It offers to read those windows by switching through their tabs; leave them alone while it does.`r`n2. Close those windows.`r`n3. Run the restore file that save made. Folders already open are skipped.`r`n`r`nThis notice comes once until File Explorer restarts again." -f $Count)
+    $code = "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{0}')), 'Save Explorer Windows', 'OK', 'Warning', 'Button1', 'DefaultDesktopOnly')" -f [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-STA', '-EncodedCommand', $encoded) -WindowStyle Hidden
+}
+
 function Invoke-AutoSave {
     # -LegacyRoot: the script's folder, when the default save folders are in
     # use and so may still need moving into "Saved sessions".
@@ -479,8 +503,34 @@ function Invoke-AutoSave {
                 -Note (New-FrozenReport -Scan $scan) -Now ([DateTimeOffset]::Now) -Settings $settings -IntervalMinutes $IntervalMinutes `
                 -RestartInfoSince { param($Since) Get-ExplorerRestartInfo -Since $Since } `
                 -NoWindow:$NoWindow -WindowOpen:(Test-NamedMutexHeld 'Local\SaveExplorerWindows.IncidentWindow')
+            # Once per shell start: the state stays the same for as long as
+            # those windows stay open, and a notice every run would nag.
+            $notice = $false
+            if ($scan.Unlisted -gt 0) {
+                $state = Read-BackupState -Folder $Folder
+                $shellStart = (Get-ExplorerRestartInfo -Since ([DateTimeOffset]::Now)).ShellStart
+                if (Test-UnlistedNoticeDue -Unlisted $scan.Unlisted -ShellStart $shellStart -NoticedFor $state.UnlistedNoticeFor) {
+                    $notice = $true
+                    if (-not $state.Unreadable) {
+                        $state.UnlistedNoticeFor = $shellStart
+                        Write-BackupState -Folder $Folder -State $state
+                    }
+                }
+            }
         } finally {
             Exit-NamedMutex $stateLock
+        }
+        if ($notice) {
+            if ($NoWindow) {
+                Write-BackupLog $Folder 'The notice about unlisted windows was not shown (-NoWindow).'
+            } else {
+                try {
+                    Start-UnlistedNotice -Count $scan.Unlisted
+                    Write-BackupLog $Folder 'Showed the notice about windows missing from Explorer''s window list.'
+                } catch {
+                    Write-BackupLog $Folder ("Could not show the notice about unlisted windows: {0}" -f $_.Exception.Message)
+                }
+            }
         }
         $launch = $result.Launch
 

@@ -310,6 +310,7 @@ try {
     [void][IO.Directory]::CreateDirectory($sf)
     $st = New-BackupState
     $st.LastEmptyAt = $base
+    $st.UnlistedNoticeFor = $base.AddMinutes(-30)
     $st.Incidents.Add([pscustomobject]@{
         Id = 'one'; DetectedAt = $base; BaselineFile = 'Restore Explorer Session 2026.10.10 10-00-00.ps1'
         BaselineSavedAt = $base.AddHours(-2); CurrentFile = ''; Cause = 'restart'; Reason = 'the PC restarted'
@@ -324,7 +325,13 @@ try {
     Check 'state: incidents survive' ($back.Incidents.Count -eq 2 -and -not $back.Unreadable)
     Check 'state: tricky paths survive exactly' ((Join-Paths $back.Incidents[0].Missing) -ceq (Join-Paths $tricky))
     Check 'state: a single missing path stays a list' ($back.Incidents[1].Missing.Count -eq 1 -and $back.Incidents[1].Missing[0] -ceq $tricky[1])
-    Check 'state: times survive' ($back.LastEmptyAt -eq $base -and $back.Incidents[0].BaselineSavedAt -eq $base.AddHours(-2))
+    Check 'state: times survive' ($back.LastEmptyAt -eq $base -and $back.Incidents[0].BaselineSavedAt -eq $base.AddHours(-2) -and
+        $back.UnlistedNoticeFor -eq $base.AddMinutes(-30))
+    Check 'unlisted notice: due with unlisted windows and none shown yet' (Test-UnlistedNoticeDue -Unlisted 3 -ShellStart $base -NoticedFor $null)
+    Check 'unlisted notice: not again for the same shell start' (-not (Test-UnlistedNoticeDue -Unlisted 3 -ShellStart $base -NoticedFor $base))
+    Check 'unlisted notice: again after the shell restarts' (Test-UnlistedNoticeDue -Unlisted 3 -ShellStart $base.AddHours(1) -NoticedFor $base)
+    Check 'unlisted notice: never without unlisted windows' (-not (Test-UnlistedNoticeDue -Unlisted 0 -ShellStart $base -NoticedFor $null))
+    Check 'unlisted notice: an unknown shell start shows it once only' (-not (Test-UnlistedNoticeDue -Unlisted 3 -ShellStart $null -NoticedFor $base))
     Check 'state: flags and names survive' ($back.Incidents[0].Notified -eq $false -and $back.Incidents[1].Notified -eq $true -and $back.Incidents[1].CurrentFile -eq 'c.ps1')
     [IO.File]::WriteAllText((Join-Path $sf 'state.json'), '{ not json', $utf8)
     $bad = Read-BackupState -Folder $sf
