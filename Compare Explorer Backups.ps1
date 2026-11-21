@@ -362,6 +362,9 @@ function Update-Lists {
     $note = ''
     if ($rs -and $rs.Kind -eq 'now' -and $script:Now -and -not (Test-ScanComplete $script:Now)) {
         $note = '  Some Explorer windows did not answer, so "Open right now" may be missing folders.'
+        if ([int]$script:Now.Unlisted -gt 0) {
+            $note = ('  {0} Explorer window(s) are missing from Explorer''s window list (Explorer restarted while they stayed open), so "Open right now" leaves their folders out. Close them, then open their folders from the backup on the left.' -f $script:Now.Unlisted)
+        }
     }
     Set-Status ('{0} missing on the right, {1} new on the right.{2}' -f $missing, $added, $note)
 }

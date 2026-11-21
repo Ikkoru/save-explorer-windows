@@ -426,6 +426,14 @@ try {
         'Restore Explorer Session 2026.10.10 12-00-00.ps1|Restore Explorer Session 2026.10.09 08-30-00_label.ps1'))
     Check 'Get-SessionBackups: a missing folder gives nothing' (@(Get-SessionBackups -Folder (Join-Path $tmp 'nope')).Count -eq 0)
 
+    # --- Whether a scan saw everything -------------------------------------
+
+    function S { param([int]$Frozen = 0, [bool]$Blocked = $false, [int]$Unlisted = 0)
+        [pscustomobject]@{ Frozen = @(1..$Frozen | Where-Object { $Frozen -gt 0 }); Blocked = $Blocked; Unlisted = $Unlisted } }
+    Check 'scan: nothing frozen, blocked or unlisted is complete' (Test-ScanComplete (S))
+    Check 'scan: folder windows missing from the window list make it incomplete' (-not (Test-ScanComplete (S -Unlisted 3)))
+    Check 'scan: a frozen tab or a blocked read makes it incomplete' (-not (Test-ScanComplete (S -Frozen 1)) -and -not (Test-ScanComplete (S -Blocked $true)))
+
     # --- A sequence of automatic runs --------------------------------------
     # Made-up scans two hours apart, KeepBackups 3. Backups are named by
     # their hour below.
@@ -483,6 +491,11 @@ try {
     Check 'runs: an incomplete scan is saved but judged on nothing' ($r.SavedFile -and $null -eq $r.Verdict -and (Get-Hours) -eq '20|18|14')
 
     $script:FakeRestart = New-Restart $base.AddHours(21) $base.AddHours(21)
+    # Explorer's shell restarted and its window list lost the folder windows
+    # still on screen: the scan reads nothing, and says it is incomplete.
+    $r = Invoke-Run 21 @() -Complete $false
+    Check 'runs: an incomplete scan that read nothing saves nothing and is no loss' ($null -eq $r.SavedFile -and $null -eq $r.Verdict -and
+        -not $r.NewIncident -and -not $r.Launch -and @(Get-Incidents).Count -eq 0)
     $r = Invoke-Run 22 @() -WindowOpen
     Check 'runs: everything gone after a restart is a loss, measured from the last complete backup' ($r.NewIncident -and
         $r.NewIncident.BaselineFile -eq (Get-FileAt 18) -and $r.NewIncident.CurrentFile -eq '' -and $null -eq $r.SavedFile)

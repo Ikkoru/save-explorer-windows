@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '7.3'
+$script:ProgramVersion = '7.4'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 
@@ -498,7 +498,27 @@ function Invoke-ExplorerScan {
         $names[$hwnd].Add([string]$info.Name)
     }
 
+    # Folder windows on screen that COM does not list at all. When the shell
+    # (the taskbar's explorer.exe) restarts while folder windows stay open
+    # in a process of their own, its new window list starts empty and those
+    # windows never join it: COM reports fewer windows, or none, while they
+    # are on screen and answering. A scan that misses them is incomplete;
+    # judged as complete, every folder in them would count as lost. Not
+    # counted when a tab froze: its window is missing from the answers too,
+    # and the frozen-tab report covers it.
+    $unlisted = 0
+    if (-not $enumerationBlocked -and $frozen.Count -eq 0) {
+        $unlisted = @(Get-ExplorerWindowProbe | Where-Object {
+            $_.ClassName -eq 'CabinetWClass' -and $_.Visible -and -not $_.Hung -and -not $seenHwnds.Contains([long]$_.Hwnd)
+        }).Count
+        if ($unlisted -gt 0) {
+            $enumerationError = ("{0} Explorer window(s) on screen are missing from Explorer's window list, so their folders cannot be read. This happens when Explorer restarts while folder windows stay open. Close those windows and reopen their folders from the newest backup to save them again." -f $unlisted)
+            if ($ShowProgress) { Write-Warning $enumerationError }
+        }
+    }
+
     [pscustomobject]@{
+        Unlisted         = $unlisted      # folder windows on screen that COM did not list
         Groups           = $groups        # HWND -> paths, tabs in order
         Names            = $names         # HWND -> display names, parallel to Groups
         Frozen           = $frozen
@@ -521,10 +541,10 @@ function Get-ScanGroups {
 }
 
 function Test-ScanComplete {
-    # A scan that skipped frozen tabs, or lost Explorer partway, saw only part
-    # of the session.
+    # A scan that skipped frozen tabs, lost Explorer partway, or found folder
+    # windows COM does not list, saw only part of the session.
     param($Scan)
-    ($Scan.Frozen.Count -eq 0) -and (-not $Scan.Blocked)
+    ($Scan.Frozen.Count -eq 0) -and (-not $Scan.Blocked) -and ([int]$Scan.Unlisted -eq 0)
 }
 
 # ---------------------------------------------------------------------------
@@ -1604,10 +1624,13 @@ function Update-AutomaticBackups {
     } elseif ($Complete) {
         $parts.Add('Nothing saved: no folder is open')
     } else {
-        $parts.Add('Nothing saved: Explorer did not answer')
+        $parts.Add('Nothing saved: no folder could be read')
     }
     if (-not $Complete) {
-        $parts.Add(("INCOMPLETE: {0} tab(s) did not answer{1}" -f $FrozenCount, $(if ($ScanError) { ', ' + $ScanError } else { '' })))
+        $why = @()
+        if ($FrozenCount -gt 0) { $why += '{0} tab(s) did not answer' -f $FrozenCount }
+        if ($ScanError) { $why += $ScanError }
+        $parts.Add('INCOMPLETE: ' + ($why -join ', '))
     }
     if ($verdict) {
         $since = if ($baseline.File) { "'{0}'" -f $baseline.File } else { 'the empty scan at {0}' -f $baseline.SavedAt.ToString('yyyy-MM-dd HH:mm') }

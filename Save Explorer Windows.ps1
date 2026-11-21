@@ -139,7 +139,7 @@ function New-FrozenReport {
     $enumerationError   = $Scan.Error
     $enumerationHResult = $Scan.HResult
     $timeoutSec         = $Scan.TimeoutSec
-    if ($frozen.Count -eq 0 -and -not $enumerationBlocked) { return '' }
+    if ($frozen.Count -eq 0 -and -not $enumerationBlocked -and [int]$Scan.Unlisted -eq 0) { return '' }
 
     $lines = New-Object 'System.Collections.Generic.List[object]'
     if ($enumerationBlocked) {
@@ -175,8 +175,12 @@ function New-FrozenReport {
         }
         Add-ReportLine $lines -DebugOnly
         Add-ReportLine $lines 'Everything below comes from the window manager, which stays responsive.' -DebugOnly
-    } else {
+    } elseif ($frozen.Count -gt 0) {
         Add-ReportLine $lines ("{0} of {1} tab entries did not respond within {2}s and were NOT saved." -f $frozen.Count, $Scan.RawCount, $timeoutSec)
+    } else {
+        # Folder windows COM does not list (Invoke-ExplorerScan): the error
+        # names the count and the remedy.
+        Add-ReportLine $lines $enumerationError
     }
 
     if ($frozen.Count -gt 0) {
@@ -256,7 +260,7 @@ function New-FrozenReport {
             Add-ReportLine $lines -DebugOnly
             Add-ReportLine $lines 'The title is the best identifier left: it names the active tab and counts' -DebugOnly
             Add-ReportLine $lines 'the rest.' -DebugOnly
-            if (-not $enumerationBlocked) {
+            if (-not $enumerationBlocked -and $frozen.Count -gt 0) {
                 Add-ReportLine $lines
                 Add-ReportLine $lines 'Close that window (right-click its taskbar button) and re-run this script'
                 Add-ReportLine $lines 'to capture everything else cleanly.'

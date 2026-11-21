@@ -113,7 +113,9 @@ Every entry is read on a worker runspace with a per-tab deadline, `$TabReadTimeo
 | Overran the deadline | Worker abandoned, entry recorded as frozen, scan continues |
 | RPC-family HRESULT | Scan stops; everything collected so far is still saved |
 
-A scan with a frozen tab or a stop partway is **incomplete**.
+After the entries, the window manager's list of folder windows (`Get-ExplorerWindowProbe`) is compared with the HWNDs COM reported, when no tab froze. A visible, responding `CabinetWClass` window that COM never reported counts as **unlisted** (`Unlisted`, with the remedy in `Error`). This happens when the shell (the taskbar's explorer.exe) restarts while folder windows stay open in a process of their own: its new window list starts empty and those windows never join it, so COM reports fewer windows, or none, for as long as they stay open. Windows opened afterwards register normally, so closing the old windows and reopening their folders from a backup ends it.
+
+A scan with a frozen tab, a stop partway or an unlisted window is **incomplete**: the automatic run saves what it read and judges nothing as lost.
 
 ### What a frozen tab yields
 
@@ -277,6 +279,7 @@ Before a push: `git grep` over the tree for private data (machine paths, people'
 - **A frozen window's paths are reported, not recovered.** Its tabs are skipped after the per-tab deadline each and described from Win32 data (title, HWND, PID, placement, hung flag). A path only survives in the rare case where the tab answered `LocationURL` before blocking; the usual block point is `Windows().Item($i)`, which yields nothing. Windows 11 draws the address bar in XAML, so even `WM_GETTEXT` gives nothing back, and the title is all there is. Closing the hung window and re-running the save script captures everything else cleanly.
 - **Each frozen tab costs a scan the full per-tab deadline** (`$TabReadTimeoutMs` in the module), so a hung window costs that times its tab count.
 - **If the shell COM service itself is down (trap 12), nothing can be saved** — not one path, from any window. The run degrades to the Win32 window list and recovery advice. Waiting for the hung window to free itself is the only fix that keeps the session.
+- **Folder windows left over from a shell restart cannot be read at all** (*The scan*, unlisted windows), and the automatic backups save nothing of them until they are closed. Only the run's log line and a save by hand say so; no window opens about it.
 
 ## Later
 
