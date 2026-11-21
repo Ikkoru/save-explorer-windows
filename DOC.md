@@ -121,6 +121,7 @@ After the entries, the window manager's list of folder windows (`Get-ExplorerWin
 - each tab (`TabItem`) is selected in turn through `SelectionItemPattern`, and the tab that was selected is selected again at the end;
 - only the active tab's address is readable: the segments of `PART_BreadcrumbBar` (`BreadcrumbBarItemControl` names, root first). The read waits until the last segment equals the tab's name, or the segments changed and settled;
 - segments become a path from the drive segment `(X:)` when the joined names exist on disk, otherwise by display name through the shell namespace (`NameSpace(0)`, This PC as `NameSpace(17)`), which also finds folders shown under another name. A single segment (This PC, Home) is no folder.
+- afterwards `Show-ConsoleWindow` brings the save's console back to the front (the root owner of `GetConsoleWindow`, which under Windows Terminal is the terminal's window): selecting tabs can leave the last window on top, and the run then looks stalled.
 
 The automatic run cannot do this unseen, so it shows a notice instead (`Start-UnlistedNotice`, a message box from a hidden process), once per shell start (`Test-UnlistedNoticeDue`, `unlistedNoticeFor` in `state.json`), and logs that it did.
 

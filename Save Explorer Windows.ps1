@@ -362,7 +362,10 @@ function Invoke-ManualSave {
         $answer = Read-Host ("Read those {0} window(s) by switching through their tabs? Leave them alone until it is done. [Y/n]" -f $scan.Unlisted)
         if ($answer -notmatch '^\s*[nN]') {
             $fallback = Read-UnlistedWindows -Scan $scan -ShowProgress
-            Write-Host ("Read {0} folder tab(s) from {1} window(s) through their address bars." -f $fallback.Tabs, $fallback.Windows)
+            # Reading selects tabs, which can leave the last window on top
+            # of this console, and the run then looks stalled.
+            Show-ConsoleWindow
+            Write-Host ("Read {0} folder tab(s) from the {1} unlisted window(s) through their address bars; the count below adds the windows read the usual way." -f $fallback.Tabs, $fallback.Windows)
             if ($fallback.Unread -gt 0) { Write-Warning $scan.Error }
             else { Write-Host "Once this is saved, close those windows and open their folders again from this save, so the automatic backups see them." -ForegroundColor Yellow }
         }
@@ -435,6 +438,41 @@ function Start-IncidentWindow {
         '-SettingsPath', ('"{0}"' -f $SettingsFile)
     )
     Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden
+}
+
+function Show-ConsoleWindow {
+    # Brings this run's console back to the front. Under Windows Terminal,
+    # GetConsoleWindow is a stand-in (PseudoConsoleWindow) owned by the
+    # terminal's window, so its root owner is the one raised. Windows lets a process take the
+    # foreground only in some states, so the window is also put on top and
+    # straight back (HWND_TOPMOST, then HWND_NOTOPMOST), which raises it
+    # even where SetForegroundWindow is refused.
+    Add-Type -ErrorAction SilentlyContinue -TypeDefinition (@(
+        'using System; using System.Runtime.InteropServices;'
+        'public class SewConsoleFront {'
+        '  [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();'
+        '  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);'
+        '  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);'
+        '  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int n);'
+        '  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);'
+        '  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);'
+        '  public static IntPtr Target() {'
+        '    IntPtr c = GetConsoleWindow();'
+        '    if (c == IntPtr.Zero) return c;'
+        '    IntPtr root = GetAncestor(c, 3);'
+        '    return root != IntPtr.Zero ? root : c;'
+        '  }'
+        '  public static bool Raise() {'
+        '    IntPtr h = Target();'
+        '    if (h == IntPtr.Zero) return false;'
+        '    if (IsIconic(h)) ShowWindow(h, 9);'
+        '    SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0013);'
+        '    SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x0013);'
+        '    return SetForegroundWindow(h);'
+        '  }'
+        '}'
+    ) -join "`n")
+    try { [void][SewConsoleFront]::Raise() } catch { }
 }
 
 function Start-UnlistedNotice {
