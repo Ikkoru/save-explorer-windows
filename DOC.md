@@ -26,7 +26,7 @@ Every save goes under one folder beside the script, `Saved sessions\`:
 | `Saved sessions\Manual saves\` | One restore script per save by hand: `Restore Explorer Session <yyyy.MM.dd HH-mm-ss>[_label].ps1`. Never cleaned up |
 | `Saved sessions\Automatic backups\` | The scheduled run's restore scripts (no label), `log.txt` and `state.json` |
 
-Running a restore script reopens its session with the original window/tab grouping, maximized. Each one is self-contained: its paths, any frozen-tab report and its metadata are base64-embedded in it.
+Running a restore script reopens its session with the original window/tab grouping, maximized, minimized where they were, and stacked in their original order. Each one is self-contained: its paths, any frozen-tab report and its metadata are base64-embedded in it.
 
 ---
 
@@ -170,10 +170,11 @@ Losing everything to a restart, a sign-out or a crash that Windows recorded stil
 
 ## Data formats
 
-**Restore script**: the template plus three base64-of-UTF-8 values:
+**Restore script**: the template plus four base64-of-UTF-8 values:
 
 - `$dataB64`: the windows, an array of arrays of paths, tabs in order.
 - `$noteB64`: the frozen-tab report, empty when nothing was frozen.
+- `$layoutB64`: per window, parallel to `$dataB64`, `{ min, z }`: whether it was minimized, and its place in the stacking order (0 frontmost), from `Get-ScanLayout` over the stacking the scan recorded (`Stacking`). Empty in a save without it, including every file from before 7.7.
 - `$metaB64`: JSON with `format`, `version` (the program's, from 6.2 on), `savedAt` (ISO 8601 with offset), `kind` (`auto` or `manual`), `label`, `complete`, `frozenTabs`, `names` (display names, arrays parallel to the windows), `bootTime` and `shellStart`. The restore code never reads it.
 
 Saves from v5.3, which had no metadata, still read: their time comes from the file name, and they count as complete when they carry no frozen-tab report. `Read-SessionBackup` returns `$null` for anything it cannot read, so cleanup never touches such a file.
@@ -208,9 +209,11 @@ Every restore script and `state.json` lists open folders.
 
 ## The generated restore script
 
-Contains its own STA guard, the three base64 values, `Get-ComId` / `Wait-For` helpers, the `SewRestoreApi` P/Invoke class (`RequestNewTab`, `SetForegroundWindow`, `ShowWindow`), the tab helpers (`Read-WindowTabs`, `Read-SettledTabs`, `Select-NewTab`, `Move-TabTo`), `Open-ExplorerGroup` and `Select-MissingFolders`.
+Contains its own STA guard, the four base64 values, `Get-ComId` / `Wait-For` helpers, the `SewRestoreApi` P/Invoke class (`RequestNewTab`, `SetForegroundWindow`, `ShowWindow`), the tab helpers (`Read-WindowTabs`, `Read-SettledTabs`, `Select-NewTab`, `Move-TabTo`), `Open-ExplorerGroup`, `Select-MissingFolders` and `Get-OpenOrder`.
 
 First it reads the paths open now and drops them from the saved windows (`Select-MissingFolders`): as a multiset, ignoring letter case, so a folder open once is skipped once. A window left with no folders is not opened. A restore run again after a partial loss therefore reopens only what is missing; a missing folder whose tab-mates are still open opens in a window of its own, not beside them (the compare window does that). Restore scripts written before 6.4 lack this and open everything. Reading the open paths goes through COM on the main thread, so a frozen Explorer window holds the restore up until it is closed.
+
+The windows left open in the order `Get-OpenOrder` gives, from the layout through `Select-MissingFolders`' `Index` (each window left's position among the saved ones): minimized windows first, each minimized again (`SW_SHOWMINNOACTIVE`, which keeps "restore to maximized") once its tabs are in, then the rest from the back of the saved stacking order to the front. Each new window comes to the front as it opens, so the one that was frontmost ends on top. Without a layout, saved order and nothing minimized.
 
 Then, per window group left, its folders that still exist (a missing one is named in a warning and skipped):
 

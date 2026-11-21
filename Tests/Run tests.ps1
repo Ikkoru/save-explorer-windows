@@ -372,7 +372,38 @@ try {
         $one = Select-MissingFolders -Groups (G 'C:\X') -OpenPaths @()
         Check 'restore: nothing open opens everything, one tab staying a window' ($one.Skipped -eq 0 -and $one.Groups.Count -eq 1 -and
             $one.Groups[0].Count -eq 1 -and $one.Groups[0][0] -eq 'C:\X')
+        Check 'restore: each window left keeps its saved index' ((($plan.Index) -join ',') -eq '0,2')
     }
+
+    # The order windows reopen in, as the restore file holds it: minimized
+    # first, then from the back of the saved stacking order to the front.
+    $orderFn = $restoreAst.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-OpenOrder' }, $true)
+    Check 'restore file: carries the window order' ($null -ne $orderFn)
+    if ($orderFn) {
+        . ([scriptblock]::Create($orderFn.Extent.Text))
+        function L { param([bool]$Min, [int]$Z) [pscustomobject]@{ min = $Min; z = $Z } }
+        $layout4 = @((L $false 2), (L $true 5), (L $false 0), (L $false 1))
+        $o = @(Get-OpenOrder -Index @(0, 1, 2, 3) -Layout $layout4)
+        Check 'order: minimized first, then back to front, frontmost last' ((($o | ForEach-Object { $_.Position }) -join ',') -eq '1,0,3,2' -and
+            $o[0].Minimize -and -not ($o[1..3] | Where-Object { $_.Minimize }))
+        $o = @(Get-OpenOrder -Index @(0, 3) -Layout $layout4)
+        Check 'order: windows skipped as open keep their own layout' ((($o | ForEach-Object { $_.Position }) -join ',') -eq '0,1' -and -not ($o | Where-Object { $_.Minimize }))
+        $o = @(Get-OpenOrder -Index @(0, 1, 2) -Layout @())
+        Check 'order: without a layout, saved order and nothing minimized' ((($o | ForEach-Object { $_.Position }) -join ',') -eq '0,1,2' -and -not ($o | Where-Object { $_.Minimize }))
+    }
+    $layoutText = { param($File) $m = [regex]::Match([IO.File]::ReadAllText($File), "\`$layoutB64 = '([^']*)'"); if ($m.Success) { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($m.Groups[1].Value)) } else { '<missing>' } }
+    Check 'restore file: no layout given, none stored' ((& $layoutText $rf) -eq '')
+    $rfl = Join-Path $tmp 'layout.ps1'
+    Write-RestoreScript -Path $rfl -Groups $groups -Note '' -Meta $meta -Layout @(([ordered]@{ min = $true; z = 3 }), ([ordered]@{ min = $false; z = 0 }), ([ordered]@{ min = $false; z = 1 }))
+    $back = @(((& $layoutText $rfl) | ConvertFrom-Json) | ForEach-Object { $_ })
+    Check 'restore file: the layout round-trips' ($back.Count -eq 3 -and $back[0].min -eq $true -and $back[0].z -eq 3 -and $back[2].z -eq 1)
+    $fakeScan = [pscustomobject]@{
+        Groups   = [ordered]@{ ([int64]111) = $null; ([int64]-1) = $null; ([int64]222) = $null }
+        Stacking = @{ ([int64]111) = [pscustomobject]@{ Z = 1; Minimized = $true }; ([int64]222) = [pscustomobject]@{ Z = 0; Minimized = $false } }
+    }
+    $sl = @(Get-ScanLayout $fakeScan)
+    Check 'layout: from the scan''s record, an unknown window at the back' ($sl.Count -eq 3 -and $sl[0].min -and $sl[0].z -eq 1 -and
+        -not $sl[1].min -and $sl[1].z -eq 1000000 -and $sl[2].z -eq 0)
 
     # The choice of the tab a new-tab request made, as the restore file
     # holds it. The case it exists for: the window's first tab was missed

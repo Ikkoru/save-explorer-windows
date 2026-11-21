@@ -45,6 +45,7 @@ Right-click a `Restore Explorer Session ... .ps1` file and choose **Run with Pow
 - Folders that are already open are skipped, so it is safe to run after only some were lost.
 - If a folder does not open, it says which at the end. Run the same file again: it opens only what is still missing. A folder that no longer exists is skipped with a note.
 - Each window opens maximized, and its tabs are added one by one. Leave the keyboard alone until it says "Done": each new window takes the keyboard as it appears.
+- Windows that were minimized are minimized again, and the others end up stacked as they were, the one in front last. Saves made before version 7.7 don't record this, so their windows open in saved order.
 - Tabs come back in the order Windows lists them, which is usually, but not always, the order they had.
 - To bring back only some folders, or to put them back beside tabs that are still open, use the compare window instead.
 

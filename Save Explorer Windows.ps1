@@ -399,7 +399,7 @@ function Invoke-ManualSave {
 
     $meta = New-SaveMeta -Scan $scan -Kind 'manual' -Label $label -SavedAt $now
     Initialize-SaveFolder -Path $Folder
-    Write-RestoreScript -Path $outputPath -Groups $groups -Note $frozenNote -Meta $meta
+    Write-RestoreScript -Path $outputPath -Groups $groups -Note $frozenNote -Meta $meta -Layout @(Get-ScanLayout $scan)
 
     Write-Host ""
     Write-Host "Saved: $outputPath" -ForegroundColor Green
@@ -536,7 +536,7 @@ function Invoke-AutoSave {
         }
         try {
             $result = Update-AutomaticBackups -Folder $Folder `
-                -Groups (Get-ScanGroups $scan) -Names (Get-ScanGroups $scan -Names) `
+                -Groups (Get-ScanGroups $scan) -Names (Get-ScanGroups $scan -Names) -Layout @(Get-ScanLayout $scan) `
                 -Complete (Test-ScanComplete $scan) -FrozenCount $scan.Frozen.Count -ScanError $scan.Error `
                 -Note (New-FrozenReport -Scan $scan) -Now ([DateTimeOffset]::Now) -Settings $settings -IntervalMinutes $IntervalMinutes `
                 -RestartInfoSince { param($Since) Get-ExplorerRestartInfo -Since $Since } `

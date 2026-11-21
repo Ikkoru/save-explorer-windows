@@ -30,7 +30,7 @@ $script:Utf8NoBom = New-Object Text.UTF8Encoding $false
 # script's file name stays fixed because a scheduled task names it. Raise it
 # with any change to either file; it is printed by a run by hand and stored
 # in every save's metadata.
-$script:ProgramVersion = '7.6'
+$script:ProgramVersion = '7.7'
 
 function Get-ProgramVersion { $script:ProgramVersion }
 
@@ -657,6 +657,17 @@ function Invoke-ExplorerScan {
     # judged as complete, every folder in them would count as lost. Not
     # counted when a tab froze: its window is missing from the answers too,
     # and the frozen-tab report covers it.
+    # Minimized state and stacking order of every folder window, as they are
+    # now: reading unlisted windows afterwards shows minimized ones and
+    # selects tabs, which changes both (Get-ScanLayout).
+    $stacking = @{}
+    $zi = 0
+    try {
+        foreach ($pw in @(Get-ExplorerWindowProbe | Where-Object { $_.ClassName -eq 'CabinetWClass' })) {
+            $stacking[[int64]$pw.Hwnd] = [pscustomobject]@{ Z = $zi++; Minimized = [bool]$pw.Minimized }
+        }
+    } catch { }
+
     $unlistedHwnds = @()
     if (-not $enumerationBlocked -and $frozen.Count -eq 0) {
         $unlistedHwnds = @(Get-ExplorerWindowProbe | Where-Object {
@@ -671,6 +682,7 @@ function Invoke-ExplorerScan {
     [pscustomobject]@{
         Unlisted         = $unlistedHwnds.Count   # folder windows on screen that COM did not list
         UnlistedHwnds    = $unlistedHwnds
+        Stacking         = $stacking      # HWND -> Z (0 frontmost), Minimized
         Groups           = $groups        # HWND -> paths, tabs in order
         Names            = $names         # HWND -> display names, parallel to Groups
         Frozen           = $frozen
@@ -727,6 +739,22 @@ function Read-UnlistedWindows {
     $Scan.Unlisted = $stillUnread
     $Scan.Error = if ($stillUnread -gt 0) { "{0} of the {1} window(s) missing from Explorer's window list could not be read completely, even through their tabs." -f $stillUnread, $all.Count } else { $null }
     [pscustomobject]@{ Windows = $all.Count; Tabs = $readTabs; Unread = $stillUnread }
+}
+
+function Get-ScanLayout {
+    # Per window, in Get-ScanGroups' order: whether it was minimized, and its
+    # place in the stacking order (z, 0 frontmost), as the scan recorded
+    # them (Stacking; the window manager lists windows front to back). A
+    # window it does not know (a key made up for an unreadable HWND) is not
+    # minimized and goes to the back. The restore file reopens windows from
+    # back to front by z.
+    param($Scan)
+    $stacking = $Scan.Stacking
+    if ($null -eq $stacking) { $stacking = @{} }
+    foreach ($key in $Scan.Groups.Keys) {
+        $s = $stacking[[int64]$key]
+        [ordered]@{ min = [bool]($s -and $s.Minimized); z = $(if ($s) { [int]$s.Z } else { 1000000 }) }
+    }
 }
 
 function Get-ScanGroups {
@@ -877,6 +905,15 @@ if ($noteB64.Length -gt 0) {
 # Nothing in this script reads it.
 $metaB64 = '@@@META_B64@@@'
 
+# Per window, parallel to the paths: whether it was minimized, and its place
+# in the stacking order (z, 0 frontmost). Empty in a save that did not
+# record it; windows then open in saved order.
+$layoutB64 = '@@@LAYOUT_B64@@@'
+$layout = @()
+if ($layoutB64.Length -gt 0) {
+    $layout = @(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($layoutB64)) | ConvertFrom-Json) | ForEach-Object { $_ })
+}
+
 # RequestNewTab asks a window for a new tab the way its own "+" button does:
 # WM_COMMAND 0xA21B posted to its ShellTabWindowClass, which sits several
 # levels below the window. Named apart from older restore scripts' WinAPI
@@ -1010,7 +1047,9 @@ function Move-TabTo {
 $script:NotRestored = 0
 
 function Open-ExplorerGroup {
-    param([string[]]$Paths)
+    # -Minimize: minimized once its tabs are in (SW_SHOWMINNOACTIVE), which
+    # keeps "restore to maximized" for it.
+    param([string[]]$Paths, [switch]$Minimize)
 
     # A folder that is gone would only cost the wait for it to arrive.
     $present = New-Object 'System.Collections.Generic.List[string]'
@@ -1095,6 +1134,7 @@ function Open-ExplorerGroup {
             $script:NotRestored++
         }
     }
+    if ($Minimize) { [SewRestoreApi]::ShowWindow($hwnd, 7) | Out-Null }
 }
 
 function Select-MissingFolders {
@@ -1109,15 +1149,40 @@ function Select-MissingFolders {
     }
     $skipped = 0
     $left = New-Object 'System.Collections.Generic.List[object]'
+    $index = New-Object 'System.Collections.Generic.List[int]'
+    $gi = -1
     foreach ($group in @($Groups)) {
+        $gi++
         $keep = New-Object 'System.Collections.Generic.List[string]'
         foreach ($p in @($group)) {
             $n = 0
             if ($open.TryGetValue($p, [ref]$n) -and $n -gt 0) { $open[$p] = $n - 1; $skipped++ } else { $keep.Add($p) }
         }
-        if ($keep.Count -gt 0) { $left.Add([string[]]$keep.ToArray()) }
+        if ($keep.Count -gt 0) { $left.Add([string[]]$keep.ToArray()); $index.Add($gi) }
     }
-    [pscustomobject]@{ Groups = $left.ToArray(); Skipped = $skipped }
+    # Index: each window left's position among the saved windows, so its
+    # layout entry still finds it.
+    [pscustomobject]@{ Groups = $left.ToArray(); Index = $index.ToArray(); Skipped = $skipped }
+}
+
+function Get-OpenOrder {
+    # The order to open the windows left, as positions into Select-
+    # MissingFolders' Groups, each with whether to minimize it. Minimized
+    # windows first, then the rest from the back of the saved stacking
+    # order to the front: each new window comes to the front as it opens,
+    # so the one that was frontmost opens last and ends up on top. Without
+    # a layout, saved order and nothing minimized.
+    param([int[]]$Index, [object[]]$Layout)
+    $items = @(for ($k = 0; $k -lt @($Index).Count; $k++) {
+        $l = if (@($Layout).Count -gt $Index[$k]) { $Layout[$Index[$k]] } else { $null }
+        [pscustomobject]@{
+            Position = $k
+            Minimize = [bool]($l -and $l.min)
+            Z        = $(if ($l -and $null -ne $l.z) { [int]$l.z } else { 0 })
+        }
+    })
+    if (@($Layout).Count -eq 0) { return $items }
+    @($items | Where-Object { $_.Minimize }) + @($items | Where-Object { -not $_.Minimize } | Sort-Object -Property @{ Expression = 'Z'; Descending = $true }, Position)
 }
 
 if ($groups.Count -eq 0) {
@@ -1132,8 +1197,8 @@ if ($groups.Count -eq 0) {
     if ($plan.Groups.Count -eq 0) {
         Write-Host "`nEvery folder in this file is already open." -ForegroundColor Green
     } else {
-        foreach ($group in $plan.Groups) {
-            Open-ExplorerGroup -Paths $group
+        foreach ($step in @(Get-OpenOrder -Index $plan.Index -Layout $layout)) {
+            Open-ExplorerGroup -Paths $plan.Groups[$step.Position] -Minimize:$step.Minimize
             Start-Sleep -Milliseconds 200
         }
         Write-Host ("`nDone. {0} window(s) restored." -f $plan.Groups.Count) -ForegroundColor Green
@@ -1167,19 +1232,22 @@ function New-RestoreScriptText {
     param(
         [object[]]$Groups,   # one string[] per window, tabs in order
         [string]$Note,       # frozen-tab report, '' when nothing was frozen
-        $Meta                # dictionary stored as JSON in $metaB64
+        $Meta,               # dictionary stored as JSON in $metaB64
+        [object[]]$Layout    # Get-ScanLayout, parallel to $Groups; none: '' in $layoutB64
     )
     $groupArrays = @(foreach ($g in $Groups) { ,@($g) })
     $json     = ConvertTo-Json -InputObject $groupArrays -Depth 3 -Compress
     $metaJson = ConvertTo-Json -InputObject $Meta -Depth 5 -Compress
+    $layoutJson = if (@($Layout).Count -gt 0 -and @($Layout).Count -eq $groupArrays.Count) { ConvertTo-Json -InputObject @($Layout) -Depth 3 -Compress } else { '' }
     $text = $script:RestoreTemplate.Replace('@@@DATA_B64@@@', (ConvertTo-Base64Utf8 $json))
     $text = $text.Replace('@@@NOTE_B64@@@', (ConvertTo-Base64Utf8 $Note))
+    $text = $text.Replace('@@@LAYOUT_B64@@@', (ConvertTo-Base64Utf8 $layoutJson))
     $text.Replace('@@@META_B64@@@', (ConvertTo-Base64Utf8 $metaJson))
 }
 
 function Write-RestoreScript {
-    param([string]$Path, [object[]]$Groups, [string]$Note, $Meta)
-    $content = New-RestoreScriptText -Groups $Groups -Note $Note -Meta $Meta
+    param([string]$Path, [object[]]$Groups, [string]$Note, $Meta, [object[]]$Layout)
+    $content = New-RestoreScriptText -Groups $Groups -Note $Note -Meta $Meta -Layout $Layout
     # UTF-8 without BOM; the content is ASCII anyway.
     [IO.File]::WriteAllText($Path, $content, $script:Utf8NoBom)
 }
@@ -1719,6 +1787,7 @@ function Update-AutomaticBackups {
         [string]$Folder,
         [object[]]$Groups,                 # the scan's windows: string[] each
         [object[]]$Names,                  # display names, parallel to $Groups
+        [object[]]$Layout,                 # Get-ScanLayout, parallel to $Groups; may be absent
         [bool]$Complete,                   # Test-ScanComplete
         [int]$FrozenCount,
         [string]$ScanError,
@@ -1804,7 +1873,7 @@ function Update-AutomaticBackups {
             bootTime   = $(if ($restart.BootTime) { $restart.BootTime.ToString('o') } else { $null })
             shellStart = $(if ($restart.ShellStart) { $restart.ShellStart.ToString('o') } else { $null })
         }
-        Write-RestoreScript -Path (Join-Path $Folder $savedFile) -Groups $Groups -Note $Note -Meta $meta
+        Write-RestoreScript -Path (Join-Path $Folder $savedFile) -Groups $Groups -Note $Note -Meta $meta -Layout $Layout
         if ($newIncident) { $newIncident.CurrentFile = $savedFile }
     } elseif ($Complete -and -not ($verdict -and $verdict.Incident)) {
         # Everything closed, and nothing says it happened by itself: taken
